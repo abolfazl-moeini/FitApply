@@ -14,8 +14,25 @@ def test_cli_help():
     assert result.exit_code == 0
     assert "fitapply" in result.stdout
     assert "parse" in result.stdout
+    assert "audit" in result.stdout
     assert "status" in result.stdout
     assert "run" in result.stdout
+
+
+def test_cli_audit_missing_file():
+    result = runner.invoke(app, ["audit", "--resume", "missing_cv.pdf"])
+    assert result.exit_code == 1
+    assert "Failed to audit resume" in result.stdout
+
+
+def test_cli_status_export():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        out_report = Path(tmpdir) / "report.md"
+        result = runner.invoke(app, ["status", "--db", str(db_path), "--export", str(out_report)])
+        assert result.exit_code == 0
+        assert out_report.exists()
+        assert "Report successfully exported to" in result.stdout
 
 
 def test_cli_status_empty():

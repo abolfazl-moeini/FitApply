@@ -157,16 +157,38 @@ class JobStore:
                 "by_status": status_counts,
             }
 
-    def get_recent_jobs(self, limit: int = 15) -> List[Dict[str, Any]]:
-        """Return most recently tracked or applied jobs."""
+    def get_recent_jobs(
+        self,
+        limit: int = 20,
+        min_score: Optional[int] = None,
+        status_filter: Optional[str] = None,
+        sort_by: str = "created_at",
+    ) -> List[Dict[str, Any]]:
+        """Return tracked or applied jobs with optional filters and sorting."""
+        query = """
+            SELECT id, platform, title, company, url, location, salary, status,
+                   fit_score, fit_reasons, missing_skills, cover_letter, applied_at, created_at, notes
+            FROM job_applications
+            WHERE 1=1
+        """
+        params: List[Any] = []
+
+        if min_score is not None:
+            query += " AND fit_score >= ?"
+            params.append(min_score)
+
+        if status_filter:
+            query += " AND status = ?"
+            params.append(status_filter)
+
+        if sort_by == "fit_score":
+            query += " ORDER BY fit_score DESC NULLS LAST, created_at DESC"
+        else:
+            query += " ORDER BY created_at DESC"
+
+        query += " LIMIT ?"
+        params.append(limit)
+
         with self._get_connection() as conn:
-            cur = conn.execute(
-                """
-                SELECT id, platform, title, company, status, fit_score, applied_at, created_at
-                FROM job_applications
-                ORDER BY created_at DESC
-                LIMIT ?;
-                """,
-                (limit,),
-            )
+            cur = conn.execute(query, params)
             return [dict(row) for row in cur.fetchall()]

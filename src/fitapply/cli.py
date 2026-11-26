@@ -23,7 +23,8 @@ from fitapply.discovery import get_discoverers_for_platforms
 from fitapply.discovery.base import JobPosting
 from fitapply.llm import get_llm_provider
 from fitapply.matcher import evaluate_job_fit
-from fitapply.resume import parse_resume_to_profile
+from fitapply.report import export_report
+from fitapply.resume import audit_resume, parse_resume_to_profile
 from fitapply.store import JobStore
 
 # Configure logging
@@ -81,14 +82,60 @@ def parse(
 
 
 @app.command()
+def audit(
+    resume: Path = typer.Option(Path("resume.pdf"), "--resume", "-r", help="Path to resume PDF file"),
+    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config.yaml"),
+):
+    """Perform a brutally honest ATS diagnostic audit on your resume PDF."""
+
+    async def _run():
+        cfg = load_config(config)
+        llm = get_llm_provider(cfg)
+        console.print(f"[bold cyan]🔍 Auditing resume for ATS compatibility:[/bold cyan] {resume}")
+
+        try:
+            result = await audit_resume(resume, llm)
+            score_color = "green" if result.ats_score >= 80 else ("yellow" if result.ats_score >= 60 else "red")
+
+            console.print(Panel(
+                f"[bold {score_color}]ATS Score: {result.ats_score} / 100[/bold {score_color}]\n\n"
+                f"[bold]Verdict:[/bold] {result.summary_verdict}\n\n"
+                f"[bold green]Keywords Detected:[/bold] {', '.join(result.detected_keywords) or 'None'}\n"
+                f"[bold red]Missing Industry Keywords:[/bold] {', '.join(result.missing_critical_keywords) or 'None'}",
+                title="🎯 ATS Diagnostic Score",
+                border_style=score_color,
+            ))
+
+            if result.critical_issues:
+                issues_text = "\n".join(f"• [red]{issue}[/red]" for issue in result.critical_issues)
+                console.print(Panel(issues_text, title="⚠️ Critical Problems Found", border_style="red"))
+
+            if result.actionable_fixes:
+                fixes_text = "\n".join(f"✔ [green]{fix}[/green]" for fix in result.actionable_fixes)
+                console.print(Panel(fixes_text, title="💡 Actionable Improvements", border_style="green"))
+
+        except Exception as e:
+            console.print(f"[bold red]Failed to audit resume:[/bold red] {e}")
+            raise typer.Exit(1)
+
+    asyncio.run(_run())
+
+
+@app.command()
 def status(
     db: Path = typer.Option(Path("data/jobs.db"), "--db", help="Path to SQLite database"),
+    top: int = typer.Option(15, "--top", "-n", help="Number of jobs to list"),
+    min_score: Optional[int] = typer.Option(None, "--min-score", help="Filter jobs with fit_score >= min_score"),
+    status_filter: Optional[str] = typer.Option(None, "--status", help="Filter by status (applied, dry_run, skipped, failed)"),
+    sort: str = typer.Option("fit_score", "--sort", help="Sort order: 'fit_score' or 'created_at'"),
+    export: Optional[Path] = typer.Option(None, "--export", "-e", help="Export report to Markdown or HTML file (e.g. report.md / report.html)"),
+    html: bool = typer.Option(False, "--html", help="Generate and instantly open standalone HTML dashboard in browser"),
 ):
-    """Show job application history and statistics."""
+    """Show job application history, filter opportunities, or export reports."""
     store = JobStore(db)
     stats = store.get_stats()
 
-    console.print("\n[bold cyan]📊 Job Application Agent Statistics[/bold cyan]")
+    console.print("\n[bold cyan]📊 FitApply Statistics & Applications[/bold cyan]")
     table = Table(title="Overview", show_header=True, header_style="bold magenta")
     table.add_column("Metric", style="dim")
     table.add_column("Value", justify="right")
@@ -99,9 +146,15 @@ def status(
         table.add_row(f"Status: {status_name}", str(count))
     console.print(table)
 
-    recent = store.get_recent_jobs(limit=10)
+    recent = store.get_recent_jobs(
+        limit=top,
+        min_score=min_score,
+        status_filter=status_filter,
+        sort_by=sort,
+    )
     if recent:
-        rec_table = Table(title="\nRecent Tracked Jobs", show_header=True, header_style="bold blue")
+        title_suffix = f" (Top {len(recent)})" if top else ""
+        rec_table = Table(title=f"\nTracked Jobs{title_suffix}", show_header=True, header_style="bold blue")
         rec_table.add_column("Platform")
         rec_table.add_column("Title")
         rec_table.add_column("Company")
@@ -119,6 +172,18 @@ def status(
                 f"[{status_color}]{r['status']}[/{status_color}]",
             )
         console.print(rec_table)
+
+    if export or html:
+        out_target = export or Path("report.html")
+        created = export_report(
+            db_path=db,
+            output_path=out_target,
+            min_score=min_score,
+            status_filter=status_filter,
+            limit=top,
+            open_browser=html,
+        )
+        console.print(f"\n[bold green]✔ Report successfully exported to:[/bold green] {created}")
 
 
 @app.command()
@@ -284,7 +349,14 @@ def run(
             # Polite delay between browser actions
             await asyncio.sleep(3)
 
-        console.print(f"\n[bold green]Run completed.[/bold green] Total processed/applied: {applied_count}")
+        console.print(Panel(
+            f"[bold green]✔ Run Completed![/bold green]\n"
+            f"- Total applied/simulated: [bold]{applied_count}[/bold]\n"
+            f"- View detailed visual dashboard: [cyan]uv run fitapply status --html[/cyan]\n"
+            f"- Export comprehensive report: [cyan]uv run fitapply status --export report.md[/cyan]",
+            title="🏁 Execution Summary",
+            border_style="green",
+        ))
 
     asyncio.run(_run())
 

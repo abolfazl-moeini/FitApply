@@ -1,14 +1,16 @@
 """Job discovery module index and registry."""
 
-from typing import Dict, List, Type
+from typing import Any, Dict, List, Type
 from fitapply.discovery.base import BaseDiscoverer, JobPosting
 from fitapply.discovery.iran_boards import IranTalentDiscoverer, JobinjaDiscoverer, JobvisionDiscoverer
-from fitapply.discovery.global_boards import GlobalBoardsDiscoverer
+from fitapply.discovery.global_boards import GlobalBoardsDiscoverer, RemotiveDiscoverer, TheMuseDiscoverer
 
-DISCOVERERS: Dict[str, Type[BaseDiscoverer]] = {
+DISCOVERERS: Dict[str, Any] = {
     "jobinja": JobinjaDiscoverer,
     "jobvision": JobvisionDiscoverer,
     "irantalent": IranTalentDiscoverer,
+    "remotive": RemotiveDiscoverer,
+    "themuse": TheMuseDiscoverer,
     "linkedin": lambda: GlobalBoardsDiscoverer(sites=["linkedin"]),
     "indeed": lambda: GlobalBoardsDiscoverer(sites=["indeed"]),
     "global": GlobalBoardsDiscoverer,

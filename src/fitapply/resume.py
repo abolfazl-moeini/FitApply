@@ -43,6 +43,17 @@ class CandidateProfile(BaseModel):
     years_of_experience: float = Field(default=0.0)
 
 
+class ResumeAuditResult(BaseModel):
+    """Honest ATS audit and diagnostic evaluation of a resume."""
+
+    ats_score: int = Field(description="ATS readability and strength score between 0 and 100")
+    summary_verdict: str = Field(description="Honest, direct 1-2 sentence executive assessment of the resume")
+    critical_issues: List[str] = Field(default_factory=list, description="4-6 concrete problems (formatting, missing impact numbers, structure)")
+    actionable_fixes: List[str] = Field(default_factory=list, description="4-6 concrete, actionable steps to improve the resume")
+    detected_keywords: List[str] = Field(default_factory=list, description="Top industry keywords successfully recognized")
+    missing_critical_keywords: List[str] = Field(default_factory=list, description="Standard skills/keywords that are conspicuously absent")
+
+
 def extract_text_from_pdf(pdf_path: Path | str) -> str:
     """Extract plain text from all pages of a PDF document using PyMuPDF."""
     import pymupdf
@@ -109,3 +120,32 @@ RESUME CONTENT:
             logger.warning("Failed to save cache (%s)", e)
 
     return profile
+
+
+async def audit_resume(pdf_path: Path | str, llm: BaseLLM) -> ResumeAuditResult:
+    """Perform a brutally honest ATS audit of the resume PDF, identifying flaws and actionable fixes."""
+    path = Path(pdf_path)
+    raw_text = extract_text_from_pdf(path)
+
+    prompt = f"""You are a brutally honest ATS (Applicant Tracking System) expert and veteran technical recruiter with 10+ years of experience.
+Analyze this resume text strictly and critically against modern hiring filters.
+
+Score Rubric (0 to 100):
+- 85-100: ATS-optimized, high keyword density, clear quantifiable business impact numbers, clean hierarchy.
+- 70-84: Decent, but has vague bullet points, missing metrics, or minor keyword gaps.
+- 50-69: Multiple real issues (passive voice, lack of measurable accomplishments, cluttered layout).
+- 0-49: Fatal ATS flaws, unparsed sections, or major structural problems that trigger automated rejection.
+
+RESUME TEXT:
+---
+{raw_text}
+---
+
+Provide honest, specific, and actionable critique without generic fluff.
+"""
+
+    return await llm.complete_structured(
+        prompt=prompt,
+        response_model=ResumeAuditResult,
+        system="You perform strict, honest ATS diagnostic audits on resumes.",
+    )
