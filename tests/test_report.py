@@ -89,3 +89,30 @@ def test_export_report_files():
         out_html = export_report(db_path, output_path=html_file, open_browser=False)
         assert out_html.exists()
         assert "<!DOCTYPE html>" in out_html.read_text(encoding="utf-8")
+
+
+def test_report_sanitization_and_markdown_table_safety():
+    stats = {"total": 1, "applied_today": 0, "by_status": {"applied": 1}}
+    jobs = [
+        {
+            "id": "test:1",
+            "platform": "jobinja",
+            "title": "Dev | Lead\nSenior",
+            "company": "Acme\r\nInc",
+            "url": "javascript:alert(1)",
+            "location": "Remote",
+            "status": 'applied"><script>alert(1)</script>',
+            "fit_score": 88,
+            "fit_reasons": "Good",
+            "missing_skills": "[]",
+            "cover_letter": "",
+            "created_at": "2026-11-26",
+        }
+    ]
+    md = generate_markdown_report(stats, jobs)
+    assert "| 88% | `applied\"><script>alert(1)</script>` | Dev - Lead Senior | Acme  Inc | jobinja | Remote |" in md
+
+    html_out = generate_html_report(stats, jobs)
+    assert "javascript:alert(1)" not in html_out
+    assert "<script>alert(1)</script>" not in html_out
+    assert 'href="#"' in html_out

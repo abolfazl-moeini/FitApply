@@ -113,6 +113,7 @@ class RemotiveDiscoverer(BaseDiscoverer):
         limit: int = 15,
     ) -> List[JobPosting]:
         results: List[JobPosting] = []
+        seen_ids: set[str] = set()
 
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
             for kw in keywords:
@@ -135,7 +136,15 @@ class RemotiveDiscoverer(BaseDiscoverer):
                         if len(results) >= limit:
                             break
 
-                        post_id = str(item.get("id"))
+                        raw_id = item.get("id")
+                        if raw_id is None:
+                            continue
+                        post_id = str(raw_id)
+                        job_id = f"remotive:{post_id}"
+                        if job_id in seen_ids:
+                            continue
+                        seen_ids.add(job_id)
+
                         title = item.get("title") or "Remote Role"
                         company = item.get("company_name") or "Remote Employer"
                         url = item.get("url") or f"https://remotive.com/remote-jobs/{post_id}"
@@ -145,7 +154,7 @@ class RemotiveDiscoverer(BaseDiscoverer):
 
                         results.append(
                             JobPosting(
-                                id=f"remotive:{post_id}",
+                                id=job_id,
                                 platform=self.platform_name,
                                 title=title,
                                 company=company,
@@ -175,6 +184,7 @@ class TheMuseDiscoverer(BaseDiscoverer):
         limit: int = 15,
     ) -> List[JobPosting]:
         results: List[JobPosting] = []
+        seen_ids: set[str] = set()
 
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
             for kw in keywords:
@@ -197,17 +207,25 @@ class TheMuseDiscoverer(BaseDiscoverer):
                         if len(results) >= limit:
                             break
 
-                        post_id = str(item.get("id"))
+                        raw_id = item.get("id")
+                        if raw_id is None:
+                            continue
+                        post_id = str(raw_id)
+                        job_id = f"themuse:{post_id}"
+                        if job_id in seen_ids:
+                            continue
+                        seen_ids.add(job_id)
+
                         title = item.get("name") or "Job Role"
-                        company = item.get("company", {}).get("name") or "Employer"
-                        url = item.get("refs", {}).get("landing_page") or f"https://www.themuse.com/jobs/{post_id}"
-                        locs = [l.get("name", "") for l in item.get("locations", []) if l.get("name")]
+                        company = (item.get("company") or {}).get("name") or "Employer"
+                        url = (item.get("refs") or {}).get("landing_page") or f"https://www.themuse.com/jobs/{post_id}"
+                        locs = [l.get("name", "") for l in (item.get("locations") or []) if l and l.get("name")]
                         loc = ", ".join(locs) if locs else "Remote / Flexible"
                         desc = _clean_html_text(item.get("contents") or title)
 
                         results.append(
                             JobPosting(
-                                id=f"themuse:{post_id}",
+                                id=job_id,
                                 platform=self.platform_name,
                                 title=title,
                                 company=company,

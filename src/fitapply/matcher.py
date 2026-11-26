@@ -92,5 +92,6 @@ Job Description:
         system="Evaluate candidate job fit accurately and generate tailored cover letter in JSON format.",
     )
 
+    eval_result.fit_score = max(0, min(100, eval_result.fit_score))
     eval_result.is_good_match = eval_result.fit_score >= min_score
     return eval_result

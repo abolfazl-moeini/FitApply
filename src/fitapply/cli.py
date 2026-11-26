@@ -190,7 +190,12 @@ def status(
 def run(
     resume: Optional[Path] = typer.Option(None, "--resume", "-r", help="Path to resume PDF file"),
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config.yaml"),
-    sites: Optional[str] = typer.Option(None, "--sites", "-s", help="Comma-separated sites: jobinja,jobvision,irantalent,linkedin"),
+    sites: Optional[str] = typer.Option(
+        None,
+        "--sites",
+        "-s",
+        help="Comma-separated sites: jobinja,jobvision,irantalent,remotive,themuse,linkedin,indeed",
+    ),
     auto: bool = typer.Option(False, "--auto", help="Fully automated mode without interactive confirmation per job"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Simulate form filling without clicking final submit button"),
     min_score: Optional[int] = typer.Option(None, "--min-score", help="Override minimum fit score threshold (0-100)"),
@@ -251,6 +256,12 @@ def run(
         console.print(f"👤 Candidate parsed: [bold green]{candidate.full_name}[/bold green] ({candidate.years_of_experience} yrs exp)")
 
         # 2. Discover Jobs
+        from fitapply.discovery import DISCOVERERS
+
+        unknown_platforms = [p for p in target_platforms if p.lower().strip() not in DISCOVERERS]
+        if unknown_platforms:
+            console.print(f"[yellow]Warning: Unrecognized platform(s) ignored: {', '.join(unknown_platforms)}[/yellow]")
+
         discoverers = get_discoverers_for_platforms(target_platforms)
         all_jobs: List[JobPosting] = []
         seen_in_run: set[str] = set()
@@ -267,6 +278,9 @@ def run(
             return
 
         applied_count = 0
+        evaluated_count = 0
+        skipped_count = 0
+        failed_count = 0
 
         # 3. Evaluate and Apply
         for job in all_jobs:
@@ -287,6 +301,7 @@ def run(
                     min_score=threshold,
                     candidate_extra=candidate_extra,
                 )
+            evaluated_count += 1
 
             # Display Evaluation Card
             score_color = "green" if evaluation.fit_score >= 80 else ("yellow" if evaluation.fit_score >= threshold else "red")
@@ -294,7 +309,9 @@ def run(
                 f"[bold]Company:[/bold] {job.company} | [bold]Platform:[/bold] {job.platform}\n"
                 f"[bold]URL:[/bold] {job.url}\n"
                 f"[bold]Fit Score:[/bold] [{score_color}]{evaluation.fit_score}%[/{score_color}] "
-                f"({'Match' if evaluation.is_good_match else 'Below Threshold'})\n"
+                f"({'Match' if evaluation.is_good_match else 'Below Threshold'}) | "
+                f"[bold]Seniority:[/bold] {evaluation.seniority_fit or 'N/A'} | "
+                f"[bold]Comp:[/bold] {evaluation.compensation_fit or 'N/A'}\n"
                 f"[bold]Reasons:[/bold] {evaluation.reasons}\n"
                 f"[bold]Missing Skills:[/bold] {', '.join(evaluation.missing_skills) if evaluation.missing_skills else 'None'}\n"
                 f"[bold]Cover Note:[/bold]\n{evaluation.cover_letter}",
@@ -306,6 +323,7 @@ def run(
                 f"Send application to [bold cyan]{job.company}[/bold cyan] ({evaluation.fit_score}%)?",
                 default=True,
             )):
+                skipped_count += 1
                 store.record_match_result(
                     job_id=job.id,
                     fit_score=evaluation.fit_score,
@@ -348,6 +366,7 @@ def run(
                     applied_count += 1
                 console.print(f"[bold green]✔ {final_status}:[/bold green] {app_res.get('notes', 'Done')}")
             else:
+                failed_count += 1
                 console.print(f"[bold red]✘ Failed:[/bold red] {app_res.get('error')}")
 
             # Polite delay between browser actions
@@ -355,7 +374,8 @@ def run(
 
         console.print(Panel(
             f"[bold green]✔ Run Completed![/bold green]\n"
-            f"- Total applied/simulated: [bold]{applied_count}[/bold]\n"
+            f"- Discovered: [bold]{len(all_jobs)}[/bold] | Evaluated: [bold]{evaluated_count}[/bold]\n"
+            f"- Applied/Simulated: [bold green]{applied_count}[/bold green] | Skipped: [yellow]{skipped_count}[/yellow] | Failed: [red]{failed_count}[/red]\n"
             f"- View detailed visual dashboard: [cyan]uv run fitapply status --html[/cyan]\n"
             f"- Export comprehensive report: [cyan]uv run fitapply status --export report.md[/cyan]",
             title="🏁 Execution Summary",

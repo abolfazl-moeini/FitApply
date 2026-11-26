@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -41,12 +42,12 @@ def generate_markdown_report(stats: Dict[str, Any], jobs: List[Dict[str, Any]]) 
 
     for j in jobs:
         score_val = f"{j['fit_score']}%" if j.get("fit_score") is not None else "-"
-        status_val = f"`{j.get('status', 'discovered')}`"
-        title = j.get("title", "").replace("|", "-")
-        company = j.get("company", "").replace("|", "-")
-        platform = j.get("platform", "")
-        location = j.get("location") or "N/A"
-        url = j.get("url", "#")
+        status_val = f"`{j.get('status') or 'discovered'}`"
+        title = (j.get("title") or "").replace("|", "-").replace("\n", " ").replace("\r", " ")
+        company = (j.get("company") or "").replace("|", "-").replace("\n", " ").replace("\r", " ")
+        platform = (j.get("platform") or "").replace("|", "-").replace("\n", " ").replace("\r", " ")
+        location = (j.get("location") or "N/A").replace("|", "-").replace("\n", " ").replace("\r", " ")
+        url = j.get("url") or "#"
         lines.append(f"| {score_val} | {status_val} | {title} | {company} | {platform} | {location} | [Open Link]({url}) |")
 
     lines.append("")
@@ -84,16 +85,17 @@ def generate_html_report(stats: Dict[str, Any], jobs: List[Dict[str, Any]]) -> s
         score = j.get("fit_score")
         score_badge = (
             f'<span class="score high">{score}% Match</span>'
-            if score and score >= 80
+            if score is not None and score >= 80
             else (
                 f'<span class="score medium">{score}% Match</span>'
-                if score and score >= 70
+                if score is not None and score >= 70
                 else (f'<span class="score low">{score}%</span>' if score is not None else '<span class="score none">No Score</span>')
             )
         )
 
-        status_class = j.get("status", "discovered")
-        status_badge = f'<span class="badge {status_class}">{status_class}</span>'
+        status_raw = str(j.get("status") or "discovered")
+        status_class = re.sub(r"[^a-zA-Z0-9_-]", "", status_raw) or "discovered"
+        status_badge = f'<span class="badge {status_class}">{html.escape(status_raw)}</span>'
 
         missing_skills_list = ""
         if j.get("missing_skills"):
@@ -128,7 +130,7 @@ def generate_html_report(stats: Dict[str, Any], jobs: List[Dict[str, Any]]) -> s
                 {cover_section}
             </div>
             <div class="card-footer">
-                <a href="{html.escape(j.get('url', '#'))}" target="_blank" rel="noopener noreferrer" class="btn-link">View Job Posting &rarr;</a>
+                <a href="{html.escape(j.get('url') if str(j.get('url') or '').startswith(('http://', 'https://')) else '#')}" target="_blank" rel="noopener noreferrer" class="btn-link">View Job Posting &rarr;</a>
                 <span class="date">{html.escape(j.get('created_at', ''))[:10]}</span>
             </div>
         </div>

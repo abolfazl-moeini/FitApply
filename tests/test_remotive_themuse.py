@@ -81,3 +81,45 @@ async def test_themuse_discoverer_mock(monkeypatch):
     assert j.company == "Acme Corp"
     assert "New York" in j.location
     assert "<p>" not in j.description
+
+
+@pytest.mark.asyncio
+async def test_remotive_dedup_and_themuse_null_fields(monkeypatch):
+    remotive = RemotiveDiscoverer()
+    muse = TheMuseDiscoverer()
+
+    remotive_resp = {
+        "jobs": [
+            {"id": 1001, "title": "Role A", "company_name": "Co A"},
+            {"id": None, "title": "Missing ID"},
+        ]
+    }
+    muse_resp = {
+        "results": [
+            {
+                "id": 3003,
+                "name": "Null-Safe Role",
+                "company": None,
+                "refs": None,
+                "locations": None,
+                "contents": None,
+            }
+        ]
+    }
+
+    async def mock_get(self, url, **kwargs):
+        req = httpx.Request("GET", url)
+        if "remotive" in url:
+            return httpx.Response(200, json=remotive_resp, request=req)
+        return httpx.Response(200, json=muse_resp, request=req)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    r_jobs = await remotive.search_jobs(keywords=["Python", "Backend"], limit=5)
+    assert len(r_jobs) == 1
+    assert r_jobs[0].id == "remotive:1001"
+
+    m_jobs = await muse.search_jobs(keywords=["Backend"], limit=5)
+    assert len(m_jobs) == 1
+    assert m_jobs[0].company == "Employer"
+    assert m_jobs[0].location == "Remote / Flexible"
