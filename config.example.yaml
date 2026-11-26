@@ -1,0 +1,53 @@
+# ==========================================
+# Job Apply Agent Configuration
+# ==========================================
+
+# Path to your master resume PDF (relative or absolute)
+resume_path: "resume.pdf"
+
+# LLM Provider settings
+# Options for provider: "antigravity" (native Antigravity SDK) or "litellm"
+llm:
+  provider: "antigravity"  # or "litellm"
+  # Model name if using litellm (e.g. gemini/gemini-2.5-flash, gpt-4o-mini, ollama/llama3.2)
+  model: "gemini/gemini-2.5-flash"
+  temperature: 0.2
+
+# Search targets & criteria
+search:
+  keywords:
+    - "Python Developer"
+    - "Backend Engineer"
+    - "Software Engineer"
+  locations:
+    - "Tehran"
+    - "Remote"
+  # Target platforms: jobinja, jobvision, irantalent, linkedin, indeed
+  platforms:
+    - "jobinja"
+    - "jobvision"
+    - "irantalent"
+
+# Matching criteria
+matching:
+  min_fit_score: 75        # Only consider jobs with >= 75% compatibility
+  max_applications_per_run: 10  # Daily rate-limiting guardrail
+
+# Chrome CDP connection
+chrome:
+  cdp_url: "http://localhost:9222"
+  timeout_seconds: 45
+
+# Candidate supplementary details (used to answer screening questions)
+candidate_answers:
+  full_name: "Ali Moeini"
+  email: "example@gmail.com"
+  phone: "09123456789"
+  city: "Tehran"
+  military_service: "معافیت دائم / پایان خدمت"
+  salary_expectation_irr_monthly: 60000000  # e.g. 60 Million Tomans / 600M Rials
+  years_of_experience: 6
+  degree: "کارشناسی"
+  english_level: "حرفه‌ای / پیشرفته"
+  github_url: "https://github.com/..."
+  linkedin_url: "https://linkedin.com/in/..."
