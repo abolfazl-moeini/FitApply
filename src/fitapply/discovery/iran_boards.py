@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import urllib.parse
 from typing import Any, Dict, List, Optional
@@ -23,6 +24,15 @@ DEFAULT_HEADERS = {
 }
 
 
+def _extract_post_id(url: str) -> str:
+    """Safely extract clean post ID from URL without trailing slashes or query parameters."""
+    clean = url.split("?")[0].rstrip("/")
+    segment = clean.split("/")[-1] if "/" in clean else clean
+    if not segment or segment in ("jobs", "job", "jobpost"):
+        return hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
+    return segment
+
+
 class JobinjaDiscoverer(BaseDiscoverer):
     """Scraper for Jobinja (jobinja.ir)."""
 
@@ -36,6 +46,7 @@ class JobinjaDiscoverer(BaseDiscoverer):
         limit: int = 15,
     ) -> List[JobPosting]:
         results: List[JobPosting] = []
+        seen_ids: set[str] = set()
 
         async with httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=20.0, follow_redirects=True) as client:
             for kw in keywords:
@@ -71,7 +82,12 @@ class JobinjaDiscoverer(BaseDiscoverer):
                             continue
 
                         job_url = job_href if job_href.startswith("http") else f"{self.BASE_URL}{job_href}"
-                        job_id = f"jobinja:{job_url.split('/')[-1].split('?')[0]}"
+                        post_id = _extract_post_id(job_url)
+                        job_id = f"jobinja:{post_id}"
+
+                        if job_id in seen_ids:
+                            continue
+                        seen_ids.add(job_id)
 
                         # Company
                         company_el = item.find("span", class_=lambda c: c and "itemCompany" in c)
@@ -127,6 +143,7 @@ class JobvisionDiscoverer(BaseDiscoverer):
         limit: int = 15,
     ) -> List[JobPosting]:
         results: List[JobPosting] = []
+        seen_ids: set[str] = set()
 
         headers = {
             **DEFAULT_HEADERS,
@@ -155,10 +172,18 @@ class JobvisionDiscoverer(BaseDiscoverer):
                         for item in job_list:
                             if len(results) >= limit:
                                 break
-                            post_id = str(item.get("id") or item.get("jobPostId"))
+                            raw_id = item.get("id") or item.get("jobPostId")
+                            if raw_id is None:
+                                continue
+                            post_id = str(raw_id)
+                            job_id = f"jobvision:{post_id}"
+                            if job_id in seen_ids:
+                                continue
+                            seen_ids.add(job_id)
+
                             title = item.get("title") or item.get("jobTitle", "نامشخص")
                             company = (
-                                item.get("company", {}).get("name")
+                                (item.get("company") or {}).get("name")
                                 or item.get("companyName")
                                 or "نامشخص"
                             )
@@ -172,7 +197,7 @@ class JobvisionDiscoverer(BaseDiscoverer):
 
                             results.append(
                                 JobPosting(
-                                    id=f"jobvision:{post_id}",
+                                    id=job_id,
                                     platform=self.platform_name,
                                     title=title,
                                     company=company,
@@ -180,7 +205,7 @@ class JobvisionDiscoverer(BaseDiscoverer):
                                     location=str(loc) if loc else None,
                                     description=desc,
                                     raw_data=item,
-                                )
+                                    )
                             )
                         if results:
                             continue
@@ -203,11 +228,15 @@ class JobvisionDiscoverer(BaseDiscoverer):
                             title = title_el.get_text(strip=True)
                             href = title_el.get("href", "")
                             job_url = href if href.startswith("http") else f"{self.BASE_URL}{href}"
-                            post_id = job_url.split("/")[-1].split("?")[0]
+                            post_id = _extract_post_id(job_url)
+                            job_id = f"jobvision:{post_id}"
+                            if job_id in seen_ids:
+                                continue
+                            seen_ids.add(job_id)
 
                             results.append(
                                 JobPosting(
-                                    id=f"jobvision:{post_id}",
+                                    id=job_id,
                                     platform=self.platform_name,
                                     title=title,
                                     company="کارفرما در جاب‌ویژن",
@@ -234,6 +263,7 @@ class IranTalentDiscoverer(BaseDiscoverer):
         limit: int = 15,
     ) -> List[JobPosting]:
         results: List[JobPosting] = []
+        seen_ids: set[str] = set()
 
         async with httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=20.0, follow_redirects=True) as client:
             for kw in keywords:
@@ -262,11 +292,15 @@ class IranTalentDiscoverer(BaseDiscoverer):
                             continue
 
                         job_url = href if href.startswith("http") else f"{self.BASE_URL}{href}"
-                        post_id = job_url.split("/")[-1].split("?")[0]
+                        post_id = _extract_post_id(job_url)
+                        job_id = f"irantalent:{post_id}"
+                        if job_id in seen_ids:
+                            continue
+                        seen_ids.add(job_id)
 
                         results.append(
                             JobPosting(
-                                id=f"irantalent:{post_id}",
+                                id=job_id,
                                 platform=self.platform_name,
                                 title=title,
                                 company="ایران‌تلنت",

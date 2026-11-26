@@ -87,4 +87,35 @@ def test_cli_end_to_end_simulated_run():
             ],
         )
         assert result.exit_code == 0
-        assert "Candidate parsed: Ali Moeini" in result.stdout
+        assert "Candidate parsed from PDF: Ali Moeini" in result.stdout
+
+
+def test_cli_run_without_pdf_using_config_profile():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg_path = Path(tmpdir) / "config.yaml"
+        cfg_path.write_text("""
+candidate_profile:
+  full_name: "Sara Rad"
+  headline: "Python Developer"
+  top_skills: ["Python", "FastAPI"]
+  years_of_experience: 4
+search:
+  platforms: ["jobinja"]
+  keywords: ["Python"]
+matching:
+  min_fit_score: 75
+        """, encoding="utf-8")
+
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                "--config", str(cfg_path),
+                "--sites", "unknown_site",
+                "--dry-run",
+                "--auto",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Using site-hosted resume + config profile" in result.stdout
+        assert "Sara Rad" in result.stdout

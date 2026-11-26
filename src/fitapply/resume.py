@@ -74,6 +74,35 @@ def extract_text_from_pdf(pdf_path: Path | str) -> str:
     return full_text
 
 
+def build_profile_from_config(cfg: Dict[str, Any]) -> CandidateProfile:
+    """Build CandidateProfile from config.yaml when no local PDF resume is used (e.g. site-hosted resumes)."""
+    prof = cfg.get("candidate_profile") or {}
+    extra = cfg.get("candidate_answers") or {}
+    search_cfg = cfg.get("search") or {}
+
+    top_skills = prof.get("top_skills") or search_cfg.get("keywords") or ["Software Engineering"]
+    full_name = prof.get("full_name") or extra.get("full_name") or "Job Applicant"
+    headline = prof.get("headline") or (top_skills[0] if top_skills else "Professional")
+    summary = prof.get("summary") or f"Experienced professional specializing in {', '.join(top_skills[:3])}."
+    location = prof.get("location") or extra.get("city") or (search_cfg.get("locations", ["Remote"])[0])
+    years = float(prof.get("years_of_experience") or extra.get("years_of_experience") or 3.0)
+
+    return CandidateProfile(
+        full_name=full_name,
+        headline=headline,
+        summary=summary,
+        location=location,
+        email=prof.get("email") or extra.get("email"),
+        phone=prof.get("phone") or extra.get("phone"),
+        top_skills=top_skills,
+        secondary_skills=prof.get("secondary_skills") or [],
+        experiences=prof.get("experiences") or [],
+        education=prof.get("education") or [],
+        languages=prof.get("languages") or ["Persian", "English"],
+        years_of_experience=years,
+    )
+
+
 async def parse_resume_to_profile(
     pdf_path: Path | str,
     llm: BaseLLM,
@@ -85,10 +114,14 @@ async def parse_resume_to_profile(
 
     if use_cache and cache_path.exists():
         try:
-            with open(cache_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            logger.info("Loaded candidate profile from cache: %s", cache_path)
-            return CandidateProfile.model_validate(data)
+            # Invalidate cache if PDF was updated after the cache was created
+            if path.exists() and cache_path.stat().st_mtime >= path.stat().st_mtime:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                logger.info("Loaded candidate profile from valid cache: %s", cache_path)
+                return CandidateProfile.model_validate(data)
+            else:
+                logger.info("Cache is older than PDF (%s), re-parsing.", path)
         except Exception as e:
             logger.warning("Failed to load cached profile (%s), re-parsing.", e)
 

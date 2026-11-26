@@ -2,8 +2,35 @@
 # Job Apply Agent Configuration
 # ==========================================
 
-# Path to your master resume PDF (relative or absolute)
+# Path to your master resume PDF (optional for sites like Jobinja/Jobvision with hosted resumes)
 resume_path: "resume.pdf"
+
+# Resume upload mode:
+# - "auto": Use site-hosted profile for Iranian platforms (Jobinja, Jobvision, IranTalent), upload PDF for global boards
+# - "site_profile": Never upload PDF, rely on pre-configured profile on the platform
+# - "always_upload": Upload local PDF whenever a visible file input is present
+resume_upload_mode: "auto"
+
+# Candidate profile used for AI job-matching (especially when no PDF resume is provided)
+candidate_profile:
+  full_name: "Ali Moeini"
+  headline: "Senior Backend Developer"
+  years_of_experience: 6.0
+  top_skills:
+    - "Python"
+    - "FastAPI"
+    - "PostgreSQL"
+    - "Docker"
+    - "Playwright"
+  secondary_skills:
+    - "Redis"
+    - "Kubernetes"
+    - "CI/CD"
+  summary: "Senior backend developer experienced in designing scalable microservices, async scraping, and workflow automation."
+  location: "Tehran / Remote"
+  languages:
+    - "Persian (Native)"
+    - "English (Professional)"
 
 # LLM Provider settings
 # Options for provider: "antigravity" (native Antigravity SDK) or "litellm"

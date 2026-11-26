@@ -1,6 +1,6 @@
 [project]
 name = "fitapply"
-version = "0.2.0"
+version = "0.3.0"
 description = "FitApply: AI-powered job application agent for Iranian and global job boards"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"

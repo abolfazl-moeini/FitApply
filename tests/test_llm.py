@@ -44,3 +44,23 @@ async def test_complete_structured():
     res = await llm.complete_structured("prompt", SampleModel)
     assert res.name == "Alice"
     assert res.score == 95
+
+
+class RetryingLLM(BaseLLM):
+    def __init__(self):
+        self.call_count = 0
+
+    async def complete(self, prompt: str, system: str | None = None) -> str:
+        self.call_count += 1
+        if self.call_count == 1:
+            return "This is not valid JSON at all"
+        return '{"name": "Bob", "score": 99}'
+
+
+@pytest.mark.asyncio
+async def test_complete_structured_with_retry():
+    llm = RetryingLLM()
+    res = await llm.complete_structured("give me json", SampleModel)
+    assert llm.call_count == 2
+    assert res.name == "Bob"
+    assert res.score == 99

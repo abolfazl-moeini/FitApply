@@ -24,7 +24,7 @@ from fitapply.discovery.base import JobPosting
 from fitapply.llm import get_llm_provider
 from fitapply.matcher import evaluate_job_fit
 from fitapply.report import export_report
-from fitapply.resume import audit_resume, parse_resume_to_profile
+from fitapply.resume import audit_resume, build_profile_from_config, parse_resume_to_profile
 from fitapply.store import JobStore
 
 # Configure logging
@@ -188,7 +188,7 @@ def status(
 
 @app.command()
 def run(
-    resume: Optional[Path] = typer.Option(None, "--resume", "-r", help="Path to resume PDF file"),
+    resume: Optional[Path] = typer.Option(None, "--resume", "-r", help="Path to resume PDF file (optional for sites with hosted resumes)"),
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config.yaml"),
     sites: Optional[str] = typer.Option(
         None,
@@ -201,6 +201,11 @@ def run(
     min_score: Optional[int] = typer.Option(None, "--min-score", help="Override minimum fit score threshold (0-100)"),
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max jobs to apply in this run"),
     cdp_url: Optional[str] = typer.Option(None, "--cdp-url", help="Chrome DevTools Protocol URL"),
+    upload_mode: str = typer.Option(
+        "auto",
+        "--upload-mode",
+        help="Resume upload mode: 'auto' (site-profile for Iranian boards, upload for global), 'site_profile', or 'always_upload'",
+    ),
 ):
     """Discover jobs, score compatibility against resume, and apply."""
 
@@ -208,13 +213,33 @@ def run(
         cfg = load_config(config)
 
         # Resume path resolution
-        pdf_path = resume if resume is not None else Path(cfg.get("resume_path", "resume.pdf"))
-        if not pdf_path.exists():
-            console.print(
-                f"[bold red]Resume file not found at:[/bold red] {pdf_path}\n"
-                "Please provide a valid PDF via `--resume path/to/cv.pdf` or in `config.yaml`."
-            )
-            raise typer.Exit(1)
+        has_explicit_resume = resume is not None
+        pdf_path = resume if resume is not None else (Path(cfg.get("resume_path")) if cfg.get("resume_path") else None)
+
+        candidate = None
+        if pdf_path and pdf_path.exists():
+            with console.status(f"[bold green]Parsing resume PDF ({pdf_path})..."):
+                try:
+                    candidate = await parse_resume_to_profile(pdf_path, llm=get_llm_provider(cfg))
+                    console.print(f"👤 Candidate parsed from PDF: [bold green]{candidate.full_name}[/bold green] ({candidate.years_of_experience} yrs exp)")
+                except Exception as e:
+                    console.print(f"[bold red]Failed to parse resume:[/bold red] {e}")
+                    raise typer.Exit(1)
+        else:
+            if has_explicit_resume:
+                console.print(f"[bold red]Resume file not found at:[/bold red] {pdf_path}")
+                raise typer.Exit(1)
+            # Build from config profile (no local PDF required for site-hosted resumes)
+            candidate = build_profile_from_config(cfg)
+            console.print(Panel(
+                f"[bold cyan]Using site-hosted resume + config profile (no PDF required)[/bold cyan]\n"
+                f"Candidate: [bold]{candidate.full_name}[/bold] ({candidate.years_of_experience} yrs exp)\n"
+                f"Headline: {candidate.headline}\n"
+                f"Skills: {', '.join(candidate.top_skills)}",
+                title="👤 Profile Mode",
+                border_style="cyan",
+            ))
+            pdf_path = None
 
         # Platform resolution
         if sites:
@@ -232,7 +257,8 @@ def run(
         candidate_extra = cfg.get("candidate_answers", {})
 
         console.print(Panel(
-            f"[bold]Resume:[/bold] {pdf_path}\n"
+            f"[bold]Resume:[/bold] {pdf_path if pdf_path else 'Pre-configured on sites (no PDF)'}\n"
+            f"[bold]Upload Mode:[/bold] {upload_mode}\n"
             f"[bold]Platforms:[/bold] {', '.join(target_platforms)}\n"
             f"[bold]Keywords:[/bold] {', '.join(keywords)}\n"
             f"[bold]Min Score:[/bold] {threshold}% | [bold]Max Applications:[/bold] {max_apply}\n"
@@ -245,15 +271,6 @@ def run(
         llm = get_llm_provider(cfg)
         store = JobStore(Path(cfg.get("db_path", "data/jobs.db")))
         applier = BrowserApplier(cdp_url=chrome_cdp, timeout_seconds=chrome_timeout)
-
-        # 1. Parse Resume
-        with console.status("[bold green]Parsing resume PDF..."):
-            try:
-                candidate = await parse_resume_to_profile(pdf_path, llm)
-            except Exception as e:
-                console.print(f"[bold red]Failed to parse resume:[/bold red] {e}")
-                raise typer.Exit(1)
-        console.print(f"👤 Candidate parsed: [bold green]{candidate.full_name}[/bold green] ({candidate.years_of_experience} yrs exp)")
 
         # 2. Discover Jobs
         from fitapply.discovery import DISCOVERERS
@@ -282,95 +299,112 @@ def run(
         skipped_count = 0
         failed_count = 0
 
-        # 3. Evaluate and Apply
-        for job in all_jobs:
-            if applied_count >= max_apply:
-                console.print(f"[bold green]Reached maximum applications limit ({max_apply}) for this run.[/bold green]")
-                break
+        # 3. Evaluate and Apply with managed browser connection
+        async with applier:
+            for job in all_jobs:
+                if applied_count >= max_apply:
+                    console.print(f"[bold green]Reached maximum applications limit ({max_apply}) for this run.[/bold green]")
+                    break
 
-            if store.is_job_seen(job.id):
-                continue
+                if store.is_job_evaluated(job.id):
+                    continue
 
-            store.record_discovery(job)
+                store.record_discovery(job)
 
-            with console.status(f"[bold cyan]Evaluating fit for: {job.title} @ {job.company}..."):
-                evaluation = await evaluate_job_fit(
-                    candidate=candidate,
-                    job=job,
-                    llm=llm,
-                    min_score=threshold,
-                    candidate_extra=candidate_extra,
-                )
-            evaluated_count += 1
+                try:
+                    with console.status(f"[bold cyan]Evaluating fit for: {job.title} @ {job.company}..."):
+                        evaluation = await evaluate_job_fit(
+                            candidate=candidate,
+                            job=job,
+                            llm=llm,
+                            min_score=threshold,
+                            candidate_extra=candidate_extra,
+                        )
+                except Exception as eval_err:
+                    logger.error("Failed to evaluate job %s: %s", job.id, eval_err)
+                    console.print(f"[bold red]Error evaluating job {job.title}:[/bold red] {eval_err}")
+                    store.record_match_result(
+                        job_id=job.id,
+                        fit_score=0,
+                        fit_reasons=f"Evaluation error: {eval_err}",
+                        missing_skills=[],
+                        cover_letter="",
+                        status="failed",
+                    )
+                    failed_count += 1
+                    continue
 
-            # Display Evaluation Card
-            score_color = "green" if evaluation.fit_score >= 80 else ("yellow" if evaluation.fit_score >= threshold else "red")
-            console.print(Panel(
-                f"[bold]Company:[/bold] {job.company} | [bold]Platform:[/bold] {job.platform}\n"
-                f"[bold]URL:[/bold] {job.url}\n"
-                f"[bold]Fit Score:[/bold] [{score_color}]{evaluation.fit_score}%[/{score_color}] "
-                f"({'Match' if evaluation.is_good_match else 'Below Threshold'}) | "
-                f"[bold]Seniority:[/bold] {evaluation.seniority_fit or 'N/A'} | "
-                f"[bold]Comp:[/bold] {evaluation.compensation_fit or 'N/A'}\n"
-                f"[bold]Reasons:[/bold] {evaluation.reasons}\n"
-                f"[bold]Missing Skills:[/bold] {', '.join(evaluation.missing_skills) if evaluation.missing_skills else 'None'}\n"
-                f"[bold]Cover Note:[/bold]\n{evaluation.cover_letter}",
-                title=f"Job Analysis: {job.title}",
-                border_style=score_color,
-            ))
+                evaluated_count += 1
 
-            if not evaluation.is_good_match or (not auto and not Confirm.ask(
-                f"Send application to [bold cyan]{job.company}[/bold cyan] ({evaluation.fit_score}%)?",
-                default=True,
-            )):
-                skipped_count += 1
+                # Display Evaluation Card
+                score_color = "green" if evaluation.fit_score >= 80 else ("yellow" if evaluation.fit_score >= threshold else "red")
+                console.print(Panel(
+                    f"[bold]Company:[/bold] {job.company} | [bold]Platform:[/bold] {job.platform}\n"
+                    f"[bold]URL:[/bold] {job.url}\n"
+                    f"[bold]Fit Score:[/bold] [{score_color}]{evaluation.fit_score}%[/{score_color}] "
+                    f"({'Match' if evaluation.is_good_match else 'Below Threshold'}) | "
+                    f"[bold]Seniority:[/bold] {evaluation.seniority_fit or 'N/A'} | "
+                    f"[bold]Comp:[/bold] {evaluation.compensation_fit or 'N/A'}\n"
+                    f"[bold]Reasons:[/bold] {evaluation.reasons}\n"
+                    f"[bold]Missing Skills:[/bold] {', '.join(evaluation.missing_skills) if evaluation.missing_skills else 'None'}\n"
+                    f"[bold]Cover Note:[/bold]\n{evaluation.cover_letter}",
+                    title=f"Job Analysis: {job.title}",
+                    border_style=score_color,
+                ))
+
+                if not evaluation.is_good_match or (not auto and not Confirm.ask(
+                    f"Send application to [bold cyan]{job.company}[/bold cyan] ({evaluation.fit_score}%)?",
+                    default=True,
+                )):
+                    skipped_count += 1
+                    store.record_match_result(
+                        job_id=job.id,
+                        fit_score=evaluation.fit_score,
+                        fit_reasons=evaluation.reasons,
+                        missing_skills=evaluation.missing_skills,
+                        cover_letter=evaluation.cover_letter,
+                        status="skipped",
+                    )
+                    continue
+
+                # Execute browser application
+                with console.status(f"[bold magenta]Applying via browser (dry_run={dry_run})..."):
+                    app_res = await applier.apply_to_job(
+                        job=job,
+                        candidate=candidate,
+                        evaluation=evaluation,
+                        llm=llm,
+                        candidate_extra=candidate_extra,
+                        resume_path=pdf_path,
+                        dry_run=dry_run,
+                        upload_mode=upload_mode,
+                    )
+
+                final_status = app_res["status"] if app_res.get("success") else "failed"
                 store.record_match_result(
                     job_id=job.id,
                     fit_score=evaluation.fit_score,
                     fit_reasons=evaluation.reasons,
                     missing_skills=evaluation.missing_skills,
                     cover_letter=evaluation.cover_letter,
-                    status="skipped",
+                    status=final_status,
                 )
-                continue
-
-            # Execute browser application
-            with console.status(f"[bold magenta]Applying via browser (dry_run={dry_run})..."):
-                app_res = await applier.apply_to_job(
-                    job=job,
-                    candidate=candidate,
-                    evaluation=evaluation,
-                    llm=llm,
-                    candidate_extra=candidate_extra,
-                    resume_path=pdf_path,
-                    dry_run=dry_run,
+                store.record_application(
+                    job.id,
+                    status=final_status,
+                    notes=app_res.get("notes") if app_res.get("success") else app_res.get("error"),
                 )
 
-            final_status = app_res["status"] if app_res.get("success") else "failed"
-            store.record_match_result(
-                job_id=job.id,
-                fit_score=evaluation.fit_score,
-                fit_reasons=evaluation.reasons,
-                missing_skills=evaluation.missing_skills,
-                cover_letter=evaluation.cover_letter,
-                status=final_status,
-            )
-            store.record_application(
-                job.id,
-                status=final_status,
-                notes=app_res.get("notes") if app_res.get("success") else app_res.get("error"),
-            )
+                if app_res.get("success"):
+                    if final_status in ("applied", "dry_run"):
+                        applied_count += 1
+                    console.print(f"[bold green]✔ {final_status}:[/bold green] {app_res.get('notes', 'Done')}")
+                else:
+                    failed_count += 1
+                    console.print(f"[bold red]✘ Failed:[/bold red] {app_res.get('error')}")
 
-            if app_res.get("success"):
-                if final_status in ("applied", "dry_run"):
-                    applied_count += 1
-                console.print(f"[bold green]✔ {final_status}:[/bold green] {app_res.get('notes', 'Done')}")
-            else:
-                failed_count += 1
-                console.print(f"[bold red]✘ Failed:[/bold red] {app_res.get('error')}")
-
-            # Polite delay between browser actions
-            await asyncio.sleep(3)
+                # Polite delay between browser actions
+                await asyncio.sleep(3)
 
         console.print(Panel(
             f"[bold green]✔ Run Completed![/bold green]\n"

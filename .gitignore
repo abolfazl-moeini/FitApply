@@ -13,3 +13,4 @@ data/
 .browser-profile/
 .env
 *.pdf.profile.json
+.DS_Store

@@ -55,10 +55,17 @@ class JobStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON job_applications(status);")
 
     def is_job_seen(self, job_id: str) -> bool:
-        """Check if job has already been discovered or applied to."""
+        """Check if job has already been discovered or tracked."""
         with self._get_connection() as conn:
             cur = conn.execute("SELECT 1 FROM job_applications WHERE id = ?", (job_id,))
             return cur.fetchone() is not None
+
+    def is_job_evaluated(self, job_id: str) -> bool:
+        """Check if job has already been evaluated or applied (not just left in discovered state)."""
+        with self._get_connection() as conn:
+            cur = conn.execute("SELECT status FROM job_applications WHERE id = ?", (job_id,))
+            row = cur.fetchone()
+            return row is not None and row["status"] != "discovered"
 
     def record_discovery(self, job: JobPosting, status: str = "discovered") -> None:
         """Save newly discovered job posting."""
