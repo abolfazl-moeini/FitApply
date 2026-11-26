@@ -84,8 +84,12 @@ def build_profile_from_config(cfg: Dict[str, Any]) -> CandidateProfile:
     full_name = prof.get("full_name") or extra.get("full_name") or "Job Applicant"
     headline = prof.get("headline") or (top_skills[0] if top_skills else "Professional")
     summary = prof.get("summary") or f"Experienced professional specializing in {', '.join(top_skills[:3])}."
-    location = prof.get("location") or extra.get("city") or (search_cfg.get("locations", ["Remote"])[0])
-    years = float(prof.get("years_of_experience") or extra.get("years_of_experience") or 3.0)
+    locs = search_cfg.get("locations") or ["Remote"]
+    location = prof.get("location") or extra.get("city") or locs[0]
+    raw_years = prof.get("years_of_experience")
+    if raw_years is None:
+        raw_years = extra.get("years_of_experience")
+    years = float(raw_years) if raw_years is not None else 3.0
 
     return CandidateProfile(
         full_name=full_name,

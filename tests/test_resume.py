@@ -1,5 +1,6 @@
 """Tests for CandidateProfile and Resume models."""
 
+import pytest
 from fitapply.resume import CandidateProfile, Education, WorkExperience
 
 
@@ -59,3 +60,61 @@ def test_build_profile_from_config():
     assert profile.years_of_experience == 8.0
     assert "FastAPI" in profile.top_skills
     assert profile.location == "Tehran"
+
+
+def test_build_profile_from_config_empty_locations_and_zero_years():
+    from fitapply.resume import build_profile_from_config
+
+    cfg = {
+        "candidate_profile": {
+            "full_name": "Junior Dev",
+            "years_of_experience": 0,
+        },
+        "search": {
+            "keywords": ["Python"],
+            "locations": [],
+        },
+    }
+    profile = build_profile_from_config(cfg)
+    assert profile.location == "Remote"
+    assert profile.years_of_experience == 0.0
+
+
+@pytest.mark.asyncio
+async def test_parse_resume_cache_mtime_invalidation():
+    import os
+    import tempfile
+    import time
+    from pathlib import Path
+    import pymupdf
+    from fitapply.llm import BaseLLM
+    from fitapply.resume import parse_resume_to_profile
+
+    class CountingLLM(BaseLLM):
+        def __init__(self):
+            self.calls = 0
+
+        async def complete(self, prompt: str, system: str | None = None) -> str:
+            self.calls += 1
+            return '{"full_name": "Updated Name", "summary": "New summary", "top_skills": ["Python"], "years_of_experience": 4.0}'
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pdf_path = Path(tmpdir) / "cv.pdf"
+        doc = pymupdf.open()
+        page = doc.new_page()
+        page.insert_text((50, 72), "Sample CV")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        cache_path = pdf_path.with_suffix(".pdf.profile.json")
+        cache_path.write_text('{"full_name": "Stale Cached Name", "summary": "Old", "top_skills": ["Python"], "years_of_experience": 1.0}', encoding="utf-8")
+
+        # Make cache older than PDF
+        now = time.time()
+        os.utime(cache_path, (now - 100, now - 100))
+        os.utime(pdf_path, (now, now))
+
+        llm = CountingLLM()
+        profile = await parse_resume_to_profile(pdf_path, llm=llm, use_cache=True)
+        assert llm.calls == 1
+        assert profile.full_name == "Updated Name"

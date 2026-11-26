@@ -201,8 +201,8 @@ def run(
     min_score: Optional[int] = typer.Option(None, "--min-score", help="Override minimum fit score threshold (0-100)"),
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max jobs to apply in this run"),
     cdp_url: Optional[str] = typer.Option(None, "--cdp-url", help="Chrome DevTools Protocol URL"),
-    upload_mode: str = typer.Option(
-        "auto",
+    upload_mode: Optional[str] = typer.Option(
+        None,
         "--upload-mode",
         help="Resume upload mode: 'auto' (site-profile for Iranian boards, upload for global), 'site_profile', or 'always_upload'",
     ),
@@ -211,6 +211,17 @@ def run(
 
     async def _run():
         cfg = load_config(config)
+
+        # Resolve upload mode from CLI flag or config.yaml
+        resolved_upload_mode = (
+            upload_mode if upload_mode is not None else cfg.get("resume_upload_mode", "auto")
+        ).lower().strip()
+        if resolved_upload_mode not in ("auto", "site_profile", "always_upload"):
+            console.print(
+                f"[bold red]Invalid upload mode:[/bold red] '{resolved_upload_mode}'. "
+                "Expected 'auto', 'site_profile', or 'always_upload'."
+            )
+            raise typer.Exit(1)
 
         # Resume path resolution
         has_explicit_resume = resume is not None
@@ -258,7 +269,7 @@ def run(
 
         console.print(Panel(
             f"[bold]Resume:[/bold] {pdf_path if pdf_path else 'Pre-configured on sites (no PDF)'}\n"
-            f"[bold]Upload Mode:[/bold] {upload_mode}\n"
+            f"[bold]Upload Mode:[/bold] {resolved_upload_mode}\n"
             f"[bold]Platforms:[/bold] {', '.join(target_platforms)}\n"
             f"[bold]Keywords:[/bold] {', '.join(keywords)}\n"
             f"[bold]Min Score:[/bold] {threshold}% | [bold]Max Applications:[/bold] {max_apply}\n"
@@ -377,7 +388,7 @@ def run(
                         candidate_extra=candidate_extra,
                         resume_path=pdf_path,
                         dry_run=dry_run,
-                        upload_mode=upload_mode,
+                        upload_mode=resolved_upload_mode,
                     )
 
                 final_status = app_res["status"] if app_res.get("success") else "failed"

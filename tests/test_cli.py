@@ -119,3 +119,12 @@ matching:
         assert result.exit_code == 0
         assert "Using site-hosted resume + config profile" in result.stdout
         assert "Sara Rad" in result.stdout
+
+
+def test_cli_run_invalid_upload_mode():
+    result = runner.invoke(
+        app,
+        ["run", "--upload-mode", "invalid_mode", "--sites", "unknown_site"],
+    )
+    assert result.exit_code == 1
+    assert "Invalid upload mode" in result.stdout

@@ -86,20 +86,16 @@ class BrowserApplier:
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
+        self._managed_lifecycle: bool = False
 
     async def __aenter__(self) -> BrowserApplier:
-        """Connect to Chrome session once for the lifecycle of batch application."""
-        try:
-            self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.connect_over_cdp(self.cdp_url)
-            self._context = self._browser.contexts[0] if self._browser.contexts else await self._browser.new_context()
-            logger.info("Connected persistent CDP session to Chrome at %s", self.cdp_url)
-        except Exception as e:
-            logger.warning("Failed pre-connecting to CDP in __aenter__ (%s), will retry per-job.", e)
+        """Enable persistent CDP session reuse across batch applications (lazy-connected on first apply)."""
+        self._managed_lifecycle = True
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Clean up shared CDP browser connection."""
+        self._managed_lifecycle = False
         if self._playwright:
             try:
                 await self._playwright.stop()
@@ -108,6 +104,38 @@ class BrowserApplier:
             self._playwright = None
             self._browser = None
             self._context = None
+
+    async def _get_or_connect_context(self) -> tuple[BrowserContext, Optional[Playwright]]:
+        """Return an active BrowserContext and an optional Playwright instance owned by this call."""
+        if self._context is not None and self._browser is not None and self._browser.is_connected():
+            return self._context, None
+
+        # Clean up stale connection if disconnected
+        if self._playwright is not None:
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
+            self._browser = None
+            self._context = None
+
+        pw = await async_playwright().start()
+        try:
+            browser: Browser = await pw.chromium.connect_over_cdp(self.cdp_url)
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        except Exception:
+            await pw.stop()
+            raise
+
+        if self._managed_lifecycle:
+            self._playwright = pw
+            self._browser = browser
+            self._context = context
+            logger.info("Connected persistent CDP session to Chrome at %s", self.cdp_url)
+            return context, None
+
+        return context, pw
 
     async def apply_to_job(
         self,
@@ -131,28 +159,19 @@ class BrowserApplier:
             effective_upload_mode = "auto"
 
         # Check browser connection
-        owns_connection = False
-        playwright_instance = self._playwright
-        context = self._context
-
-        if context is None:
-            owns_connection = True
-            playwright_instance = await async_playwright().start()
-            try:
-                browser: Browser = await playwright_instance.chromium.connect_over_cdp(self.cdp_url)
-                context = browser.contexts[0] if browser.contexts else await browser.new_context()
-            except Exception as e:
-                logger.error("Failed to connect to Chrome at %s: %s", self.cdp_url, e)
-                if playwright_instance:
-                    await playwright_instance.stop()
-                return {
-                    "success": False,
-                    "status": "failed",
-                    "error": (
-                        f"Could not connect to Chrome on {self.cdp_url}. "
-                        "Make sure Chrome is running with --remote-debugging-port=9222"
-                    ),
-                }
+        owned_pw: Optional[Playwright] = None
+        try:
+            context, owned_pw = await self._get_or_connect_context()
+        except Exception as e:
+            logger.error("Failed to connect to Chrome at %s: %s", self.cdp_url, e)
+            return {
+                "success": False,
+                "status": "failed",
+                "error": (
+                    f"Could not connect to Chrome on {self.cdp_url}. "
+                    "Make sure Chrome is running with --remote-debugging-port=9222"
+                ),
+            }
 
         page: Page = await context.new_page()
 
@@ -261,9 +280,9 @@ class BrowserApplier:
                 await page.close()
             except Exception:
                 pass
-            if owns_connection and playwright_instance:
+            if owned_pw is not None:
                 try:
-                    await playwright_instance.stop()
+                    await owned_pw.stop()
                 except Exception:
                     pass
 
