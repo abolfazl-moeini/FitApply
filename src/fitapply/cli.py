@@ -243,7 +243,11 @@ def run(
 
         # 1. Parse Resume
         with console.status("[bold green]Parsing resume PDF..."):
-            candidate = await parse_resume_to_profile(pdf_path, llm)
+            try:
+                candidate = await parse_resume_to_profile(pdf_path, llm)
+            except Exception as e:
+                console.print(f"[bold red]Failed to parse resume:[/bold red] {e}")
+                raise typer.Exit(1)
         console.print(f"👤 Candidate parsed: [bold green]{candidate.full_name}[/bold green] ({candidate.years_of_experience} yrs exp)")
 
         # 2. Discover Jobs

@@ -93,6 +93,7 @@ async def parse_resume_to_profile(
             logger.warning("Failed to load cached profile (%s), re-parsing.", e)
 
     raw_text = extract_text_from_pdf(path)
+    bounded_text = raw_text[:15000]
 
     prompt = f"""You are an expert HR and recruitment AI analyzer.
 Analyze the following resume text carefully and extract a comprehensive, structured candidate profile.
@@ -101,7 +102,7 @@ Extract all skills, work experiences, education, and calculate total years of ex
 
 RESUME CONTENT:
 ---
-{raw_text}
+{bounded_text}
 ---
 """
 
@@ -126,6 +127,7 @@ async def audit_resume(pdf_path: Path | str, llm: BaseLLM) -> ResumeAuditResult:
     """Perform a brutally honest ATS audit of the resume PDF, identifying flaws and actionable fixes."""
     path = Path(pdf_path)
     raw_text = extract_text_from_pdf(path)
+    bounded_text = raw_text[:15000]
 
     prompt = f"""You are a brutally honest ATS (Applicant Tracking System) expert and veteran technical recruiter with 10+ years of experience.
 Analyze this resume text strictly and critically against modern hiring filters.
@@ -138,7 +140,7 @@ Score Rubric (0 to 100):
 
 RESUME TEXT:
 ---
-{raw_text}
+{bounded_text}
 ---
 
 Provide honest, specific, and actionable critique without generic fluff.

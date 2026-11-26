@@ -47,3 +47,17 @@ async def test_audit_resume():
         assert len(res.actionable_fixes) == 3
         assert "Python" in res.detected_keywords
         assert "CI/CD" in res.missing_critical_keywords
+
+
+@pytest.mark.asyncio
+async def test_audit_empty_pdf_raises_error():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pdf_path = Path(tmpdir) / "empty_cv.pdf"
+        doc = pymupdf.open()
+        doc.new_page()  # blank page without text
+        doc.save(str(pdf_path))
+        doc.close()
+
+        llm = MockAuditLLM()
+        with pytest.raises(ValueError, match="No extractable text found in PDF"):
+            await audit_resume(pdf_path, llm)

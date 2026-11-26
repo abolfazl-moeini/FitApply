@@ -354,6 +354,7 @@ def export_report(
     )
 
     out_file = Path(output_path) if output_path else Path("report.html" if open_browser else "report.md")
+    out_file.parent.mkdir(parents=True, exist_ok=True)
 
     if out_file.suffix.lower() == ".html":
         content = generate_html_report(stats, jobs)

@@ -184,7 +184,7 @@ class TheMuseDiscoverer(BaseDiscoverer):
                 try:
                     resp = await client.get(
                         self.BASE_API_URL,
-                        params={"query": kw, "page": 1, "descending": "true"},
+                        params={"query": kw, "page": 0, "descending": "true"},
                     )
                     if resp.status_code != 200:
                         logger.warning("The Muse API returned %d for query '%s'", resp.status_code, kw)

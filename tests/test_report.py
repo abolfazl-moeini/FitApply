@@ -80,7 +80,7 @@ def test_export_report_files():
             status="applied",
         )
 
-        md_file = Path(tmpdir) / "report.md"
+        md_file = Path(tmpdir) / "reports_nested" / "sub" / "report.md"
         out_md = export_report(db_path, output_path=md_file, open_browser=False)
         assert out_md.exists()
         assert "FastAPI Developer" in out_md.read_text(encoding="utf-8")
