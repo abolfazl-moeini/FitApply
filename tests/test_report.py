@@ -53,6 +53,7 @@ def test_markdown_and_html_generation():
     html_out = generate_html_report(stats, jobs)
     assert "<!DOCTYPE html>" in html_out
     assert "FitApply - Job Report Dashboard" in html_out
+    assert "Total Jobs Tracked" in html_out
     assert "Global Remote Inc" in html_out
     assert "92% Match" in html_out
 
@@ -110,9 +111,69 @@ def test_report_sanitization_and_markdown_table_safety():
         }
     ]
     md = generate_markdown_report(stats, jobs)
-    assert "| 88% | `applied\"><script>alert(1)</script>` | Dev - Lead Senior | Acme  Inc | jobinja | Remote |" in md
+    assert "javascript:alert(1)" not in md
+    assert "Dev \\| Lead Senior" in md
 
     html_out = generate_html_report(stats, jobs)
     assert "javascript:alert(1)" not in html_out
     assert "<script>alert(1)</script>" not in html_out
     assert 'href="#"' in html_out
+
+
+def test_export_refuses_database_and_sidecar_targets():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Path(tmpdir) / "jobs.db"
+        JobStore(db)
+        alias = Path(tmpdir) / "nested" / ".." / "jobs.db"
+        for target in (db, alias, Path(str(db) + "-wal"), Path(str(db) + "-shm")):
+            try:
+                export_report(db, target)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"unsafe export target accepted: {target}")
+        hardlink = Path(tmpdir) / "jobs-hardlink.db"
+        symlink = Path(tmpdir) / "jobs-symlink.db"
+        try:
+            hardlink.hardlink_to(db)
+            symlink.symlink_to(db)
+        except OSError:
+            pass
+        else:
+            for target in (hardlink, symlink):
+                try:
+                    export_report(db, target)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(f"database alias accepted: {target}")
+        assert JobStore(db).get_stats()["total"] == 0
+
+
+def test_markdown_escapes_untrusted_contexts_and_validates_links():
+    job = {
+        "title": "[role](javascript:bad) | <tag>", "company": "Acme", "platform": "site",
+        "url": "https://example.com/jobs?id=1&x=2", "location": "Remote", "status": "discovered",
+        "fit_score": 90, "fit_reasons": "<b>reason</b>", "missing_skills": "[]",
+        "cover_letter": "line\n```\n<script>", "created_at": "today",
+    }
+    md = generate_markdown_report({}, [job])
+    assert "[Open Link](<https://example.com/jobs?id=1&x=2>)" in md
+    assert "&lt;script&gt;" in md
+    assert "```text\nline" in md
+
+    job["url"] = "https:///missing-host"
+    md = generate_markdown_report({}, [job])
+    assert "[Open Link]" not in md
+    assert "Unavailable" in md
+    assert 'href="#"' in generate_html_report({}, [job])
+
+
+def test_export_rejects_browser_open_for_non_html(tmp_path):
+    import pytest
+
+    db = tmp_path / "jobs.db"
+    JobStore(db)
+    md_target = tmp_path / "report.md"
+    with pytest.raises(ValueError, match="target must end in .html"):
+        export_report(db, output_path=md_target, open_browser=True)

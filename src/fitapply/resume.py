@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import List, Optional
 from pydantic import BaseModel, Field
@@ -46,7 +49,7 @@ class CandidateProfile(BaseModel):
 class ResumeAuditResult(BaseModel):
     """Honest ATS audit and diagnostic evaluation of a resume."""
 
-    ats_score: int = Field(description="ATS readability and strength score between 0 and 100")
+    ats_score: int = Field(ge=0, le=100, description="ATS readability and strength score between 0 and 100")
     summary_verdict: str = Field(description="Honest, direct 1-2 sentence executive assessment of the resume")
     critical_issues: List[str] = Field(default_factory=list, description="4-6 concrete problems (formatting, missing impact numbers, structure)")
     actionable_fixes: List[str] = Field(default_factory=list, description="4-6 concrete, actionable steps to improve the resume")
@@ -62,16 +65,44 @@ def extract_text_from_pdf(pdf_path: Path | str) -> str:
     if not path.exists():
         raise FileNotFoundError(f"Resume PDF file not found at: {path}")
 
-    doc = pymupdf.open(str(path))
     texts: List[str] = []
-    for page_num in range(len(doc)):
-        page = doc[page_num]
-        texts.append(page.get_text("text"))
+    with pymupdf.open(str(path)) as doc:
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            texts.append(page.get_text("text"))
 
     full_text = "\n".join(texts).strip()
     if not full_text:
         raise ValueError(f"No extractable text found in PDF: {path}. Check if it is a scanned image.")
     return full_text
+
+
+def _extract_prompt_text(pdf_path: Path, limit: int = 15000) -> str:
+    """Extract only as much PDF text as can be sent in an LLM prompt."""
+    import pymupdf
+
+    chunks: List[str] = []
+    size = 0
+    with pymupdf.open(str(pdf_path)) as doc:
+        for page in doc:
+            remaining = limit - size
+            if remaining <= 0:
+                break
+            chunk = page.get_text("text")[:remaining]
+            chunks.append(chunk)
+            size += len(chunk)
+    text = "\n".join(chunks).strip()
+    if not text:
+        raise ValueError(f"No extractable text found in PDF: {pdf_path}. Check if it is a scanned image.")
+    return text
+
+
+def _pdf_fingerprint(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def build_profile_from_config(cfg: Dict[str, Any]) -> CandidateProfile:
@@ -80,16 +111,16 @@ def build_profile_from_config(cfg: Dict[str, Any]) -> CandidateProfile:
     extra = cfg.get("candidate_answers") or {}
     search_cfg = cfg.get("search") or {}
 
-    top_skills = prof.get("top_skills") or search_cfg.get("keywords") or ["Software Engineering"]
-    full_name = prof.get("full_name") or extra.get("full_name") or "Job Applicant"
+    top_skills = prof.get("top_skills") or []
+    full_name = prof.get("full_name") or extra.get("full_name") or ""
     headline = prof.get("headline") or (top_skills[0] if top_skills else "Professional")
-    summary = prof.get("summary") or f"Experienced professional specializing in {', '.join(top_skills[:3])}."
+    summary = prof.get("summary") or ""
     locs = search_cfg.get("locations") or ["Remote"]
     location = prof.get("location") or extra.get("city") or locs[0]
     raw_years = prof.get("years_of_experience")
     if raw_years is None:
         raw_years = extra.get("years_of_experience")
-    years = float(raw_years) if raw_years is not None else 3.0
+    years = float(raw_years) if raw_years is not None else 0.0
 
     return CandidateProfile(
         full_name=full_name,
@@ -102,7 +133,7 @@ def build_profile_from_config(cfg: Dict[str, Any]) -> CandidateProfile:
         secondary_skills=prof.get("secondary_skills") or [],
         experiences=prof.get("experiences") or [],
         education=prof.get("education") or [],
-        languages=prof.get("languages") or ["Persian", "English"],
+        languages=prof.get("languages") or [],
         years_of_experience=years,
     )
 
@@ -118,10 +149,11 @@ async def parse_resume_to_profile(
 
     if use_cache and cache_path.exists():
         try:
-            # Invalidate cache if PDF was updated after the cache was created
-            if path.exists() and cache_path.stat().st_mtime >= path.stat().st_mtime:
+            if path.exists():
                 with open(cache_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                if data.pop("_source_sha256", None) != _pdf_fingerprint(path):
+                    raise ValueError("Resume cache fingerprint does not match source PDF")
                 logger.info("Loaded candidate profile from valid cache: %s", cache_path)
                 return CandidateProfile.model_validate(data)
             else:
@@ -129,8 +161,7 @@ async def parse_resume_to_profile(
         except Exception as e:
             logger.warning("Failed to load cached profile (%s), re-parsing.", e)
 
-    raw_text = extract_text_from_pdf(path)
-    bounded_text = raw_text[:15000]
+    bounded_text = _extract_prompt_text(path)
 
     prompt = f"""You are an expert HR and recruitment AI analyzer.
 Analyze the following resume text carefully and extract a comprehensive, structured candidate profile.
@@ -152,7 +183,17 @@ RESUME CONTENT:
     if use_cache:
         try:
             with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump(profile.model_dump(), f, ensure_ascii=False, indent=2)
+                payload = profile.model_dump()
+                payload["_source_sha256"] = _pdf_fingerprint(path)
+                fd, temp_name = tempfile.mkstemp(prefix=f".{cache_path.name}.", dir=cache_path.parent)
+                try:
+                    os.fchmod(fd, 0o600)
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(payload, f, ensure_ascii=False, indent=2)
+                    os.replace(temp_name, cache_path)
+                finally:
+                    if os.path.exists(temp_name):
+                        os.unlink(temp_name)
             logger.info("Saved candidate profile to cache: %s", cache_path)
         except Exception as e:
             logger.warning("Failed to save cache (%s)", e)
@@ -163,8 +204,7 @@ RESUME CONTENT:
 async def audit_resume(pdf_path: Path | str, llm: BaseLLM) -> ResumeAuditResult:
     """Perform a brutally honest ATS audit of the resume PDF, identifying flaws and actionable fixes."""
     path = Path(pdf_path)
-    raw_text = extract_text_from_pdf(path)
-    bounded_text = raw_text[:15000]
+    bounded_text = _extract_prompt_text(path)
 
     prompt = f"""You are a brutally honest ATS (Applicant Tracking System) expert and veteran technical recruiter with 10+ years of experience.
 Analyze this resume text strictly and critically against modern hiring filters.

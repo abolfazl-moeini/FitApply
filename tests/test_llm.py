@@ -64,3 +64,17 @@ async def test_complete_structured_with_retry():
     assert llm.call_count == 2
     assert res.name == "Bob"
     assert res.score == 99
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_is_not_retried_or_leaked_into_prompt():
+    class BrokenLLM(BaseLLM):
+        calls = 0
+        async def complete(self, prompt: str, system: str | None = None) -> str:
+            self.calls += 1
+            raise RuntimeError("sensitive-provider-detail")
+
+    llm = BrokenLLM()
+    with pytest.raises(RuntimeError, match="sensitive-provider-detail"):
+        await llm.complete_structured("prompt", SampleModel)
+    assert llm.calls == 1

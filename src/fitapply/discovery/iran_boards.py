@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+from urllib.parse import urlsplit
 import logging
 import urllib.parse
+from urllib.parse import urljoin
 from typing import Any, Dict, List, Optional
 import httpx
 from bs4 import BeautifulSoup
@@ -12,6 +14,19 @@ from bs4 import BeautifulSoup
 from fitapply.discovery.base import BaseDiscoverer, JobPosting
 
 logger = logging.getLogger(__name__)
+
+
+def _filter_known_locations(jobs: List[JobPosting], locations: Optional[List[str]]) -> List[JobPosting]:
+    requested = [location.strip().casefold() for location in (locations or []) if location and location.strip()]
+    if not requested:
+        return jobs
+    filtered = []
+    for job in jobs:
+        actual = (job.location or "").strip().casefold()
+        # Preserve records with no usable location; do not invent a location.
+        if not actual or any(location in actual for location in requested):
+            filtered.append(job)
+    return filtered
 
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -26,7 +41,7 @@ DEFAULT_HEADERS = {
 
 def _extract_post_id(url: str) -> str:
     """Safely extract clean post ID from URL without trailing slashes or query parameters."""
-    clean = url.split("?")[0].rstrip("/")
+    clean = urlsplit(url).path.rstrip("/")
     segment = clean.split("/")[-1] if "/" in clean else clean
     if not segment or segment in ("jobs", "job", "jobpost"):
         return hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
@@ -48,15 +63,19 @@ class JobinjaDiscoverer(BaseDiscoverer):
         results: List[JobPosting] = []
         seen_ids: set[str] = set()
 
-        async with httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=20.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=20.0, follow_redirects=False) as client:
             for kw in keywords:
                 if len(results) >= limit:
                     break
+                keyword_start = len(results)
                 encoded_kw = urllib.parse.quote(kw)
                 url = f"{self.BASE_URL}/jobs?filters%5Bkeywords%5D%5B0%5D={encoded_kw}"
 
                 try:
                     resp = await client.get(url)
+                    if resp.status_code in {301, 302, 303, 307, 308} or urlsplit(str(resp.url)).hostname not in {"jobinja.ir", "www.jobinja.ir"}:
+                        logger.warning("Refusing off-board Jobinja search redirect")
+                        continue
                     if resp.status_code != 200:
                         logger.warning("Jobinja returned %d for keyword '%s'", resp.status_code, kw)
                         continue
@@ -81,7 +100,10 @@ class JobinjaDiscoverer(BaseDiscoverer):
                         if not job_href:
                             continue
 
-                        job_url = job_href if job_href.startswith("http") else f"{self.BASE_URL}{job_href}"
+                        job_url = urljoin(self.BASE_URL, job_href)
+                        parsed = urlsplit(job_url)
+                        if parsed.scheme != "https" or parsed.hostname not in {"jobinja.ir", "www.jobinja.ir"}:
+                            continue
                         post_id = _extract_post_id(job_url)
                         job_id = f"jobinja:{post_id}"
 
@@ -114,11 +136,16 @@ class JobinjaDiscoverer(BaseDiscoverer):
                 except Exception as e:
                     logger.error("Error searching Jobinja for '%s': %s", kw, e)
 
-        return results
+        return _filter_known_locations(results, locations)
 
     async def _fetch_description(self, client: httpx.AsyncClient, url: str) -> str:
         try:
             resp = await client.get(url)
+            if resp.status_code in {301, 302, 303, 307, 308}:
+                return ""
+            parsed = urlsplit(str(resp.url))
+            if parsed.scheme != "https" or parsed.hostname not in {"jobinja.ir", "www.jobinja.ir"}:
+                return ""
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, "html.parser")
                 desc_div = soup.find("div", class_=lambda c: c and ("jobDesc" in c or "description" in c))
@@ -179,8 +206,6 @@ class JobvisionDiscoverer(BaseDiscoverer):
                             job_id = f"jobvision:{post_id}"
                             if job_id in seen_ids:
                                 continue
-                            seen_ids.add(job_id)
-
                             title = item.get("title") or item.get("jobTitle", "نامشخص")
                             company = (
                                 (item.get("company") or {}).get("name")
@@ -195,19 +220,17 @@ class JobvisionDiscoverer(BaseDiscoverer):
                             )
                             loc = item.get("city") or item.get("location")
 
-                            results.append(
-                                JobPosting(
-                                    id=job_id,
-                                    platform=self.platform_name,
-                                    title=title,
-                                    company=company,
-                                    url=job_url,
-                                    location=str(loc) if loc else None,
-                                    description=desc,
-                                    raw_data=item,
-                                    )
-                            )
-                        if results:
+                            try:
+                                posting = JobPosting(
+                                    id=job_id, platform=self.platform_name, title=title, company=company,
+                                    url=job_url, location=str(loc) if loc else None,
+                                    description=desc, raw_data=item,
+                                )
+                            except Exception:
+                                continue
+                            seen_ids.add(job_id)
+                            results.append(posting)
+                        if len(results) > keyword_start:
                             continue
                 except Exception as e:
                     logger.debug("Jobvision API search failed (%s), attempting web fallback.", e)
@@ -247,7 +270,7 @@ class JobvisionDiscoverer(BaseDiscoverer):
                 except Exception as e:
                     logger.error("Error searching Jobvision for '%s': %s", kw, e)
 
-        return results
+        return _filter_known_locations(results, locations)
 
 
 class IranTalentDiscoverer(BaseDiscoverer):
@@ -311,4 +334,4 @@ class IranTalentDiscoverer(BaseDiscoverer):
                 except Exception as e:
                     logger.error("Error searching IranTalent for '%s': %s", kw, e)
 
-        return results
+        return _filter_known_locations(results, locations)

@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
+from rich.markup import escape as escape_markup
 
 load_dotenv()
 
@@ -41,6 +42,8 @@ console = Console()
 
 def load_config(config_path: Optional[Path]) -> Dict[str, Any]:
     """Load configuration from YAML file or fallback to example."""
+    if config_path is not None and not config_path.is_file():
+        raise ValueError(f"Configuration file not found: {config_path}")
     candidates = [
         config_path,
         Path("config.yaml"),
@@ -49,8 +52,47 @@ def load_config(config_path: Optional[Path]) -> Dict[str, Any]:
     for p in candidates:
         if p and p.exists():
             with open(p, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
+                try:
+                    data = yaml.safe_load(f)
+                except yaml.YAMLError as exc:
+                    raise ValueError(f"Invalid YAML in {p}: {exc}") from exc
+                if data is None:
+                    return {}
+                if not isinstance(data, dict):
+                    raise ValueError(f"Configuration root in {p} must be a mapping")
+                return data
     return {}
+
+
+def _validate_run_config(cfg: Dict[str, Any], sites: Optional[str], min_score: Optional[int], limit: Optional[int]) -> list[str]:
+    """Validate run settings before constructing providers, stores, or browser clients."""
+    errors: list[str] = []
+    for key in ("search", "matching", "chrome", "candidate_profile", "candidate_answers", "llm"):
+        value = cfg.get(key)
+        if value is not None and not isinstance(value, dict):
+            errors.append(f"'{key}' must be a mapping")
+    search = cfg.get("search") or {}
+    for key in ("keywords", "locations", "platforms"):
+        value = search.get(key)
+        if value is not None and (not isinstance(value, list) or any(not isinstance(item, str) for item in value)):
+            errors.append(f"'search.{key}' must be a list of strings")
+    matching, chrome = cfg.get("matching") or {}, cfg.get("chrome") or {}
+    score = min_score if min_score is not None else matching.get("min_fit_score", 75)
+    limit_value = limit if limit is not None else matching.get("max_applications_per_run", 10)
+    timeout = chrome.get("timeout_seconds", 45)
+    if not isinstance(score, int) or isinstance(score, bool) or not 0 <= score <= 100:
+        errors.append("Minimum fit score must be an integer from 0 to 100")
+    if not isinstance(limit_value, int) or isinstance(limit_value, bool) or limit_value <= 0:
+        errors.append("Maximum applications per run must be a positive integer")
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
+        errors.append("Chrome timeout must be a positive number of seconds")
+    valid_sites = {"jobinja", "jobvision", "irantalent", "remotive", "themuse", "linkedin", "indeed"}
+    configured_sites = sites.split(",") if sites is not None else search.get("platforms", ["jobinja", "jobvision"])
+    if not any(str(site).strip().lower() in valid_sites for site in configured_sites):
+        errors.append("Configure at least one recognized platform")
+    if cfg.get("candidate_answers") is not None and not isinstance(cfg.get("candidate_answers"), dict):
+        errors.append("'candidate_answers' must be a mapping")
+    return errors
 
 
 @app.command()
@@ -61,7 +103,11 @@ def parse(
     """Test extracting structured candidate profile from resume PDF."""
 
     async def _run():
-        cfg = load_config(config)
+        try:
+            cfg = load_config(config)
+        except (ValueError, OSError) as exc:
+            console.print(f"[bold red]Configuration error:[/bold red] {exc}")
+            raise typer.Exit(1)
         llm = get_llm_provider(cfg)
         console.print(f"[bold cyan]Reading resume from:[/bold cyan] {resume}")
 
@@ -89,7 +135,11 @@ def audit(
     """Perform a brutally honest ATS diagnostic audit on your resume PDF."""
 
     async def _run():
-        cfg = load_config(config)
+        try:
+            cfg = load_config(config)
+        except (ValueError, OSError) as exc:
+            console.print(f"[bold red]Configuration error:[/bold red] {exc}")
+            raise typer.Exit(1)
         llm = get_llm_provider(cfg)
         console.print(f"[bold cyan]🔍 Auditing resume for ATS compatibility:[/bold cyan] {resume}")
 
@@ -123,15 +173,28 @@ def audit(
 
 @app.command()
 def status(
-    db: Path = typer.Option(Path("data/jobs.db"), "--db", help="Path to SQLite database"),
+    db: Optional[Path] = typer.Option(None, "--db", help="Path to SQLite database"),
+    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config.yaml"),
     top: int = typer.Option(15, "--top", "-n", help="Number of jobs to list"),
     min_score: Optional[int] = typer.Option(None, "--min-score", help="Filter jobs with fit_score >= min_score"),
-    status_filter: Optional[str] = typer.Option(None, "--status", help="Filter by status (applied, dry_run, skipped, failed)"),
+    status_filter: Optional[str] = typer.Option(None, "--status", help="Filter by status"),
     sort: str = typer.Option("fit_score", "--sort", help="Sort order: 'fit_score' or 'created_at'"),
     export: Optional[Path] = typer.Option(None, "--export", "-e", help="Export report to Markdown or HTML file (e.g. report.md / report.html)"),
     html: bool = typer.Option(False, "--html", help="Generate and instantly open standalone HTML dashboard in browser"),
 ):
     """Show job application history, filter opportunities, or export reports."""
+    if db is None:
+        try:
+            cfg = load_config(config)
+        except (ValueError, OSError) as exc:
+            console.print(f"[bold red]Configuration error:[/bold red] {exc}")
+            raise typer.Exit(1)
+        configured_db = cfg.get("db_path", "data/jobs.db")
+        if config is not None and not Path(configured_db).is_absolute():
+            db = config.parent / configured_db
+        else:
+            db = Path(configured_db)
+
     store = JobStore(db)
     stats = store.get_stats()
 
@@ -165,24 +228,29 @@ def status(
             score_str = f"{r['fit_score']}%" if r["fit_score"] is not None else "-"
             status_color = "green" if r["status"] == "applied" else ("yellow" if r["status"] == "dry_run" else "white")
             rec_table.add_row(
-                r["platform"],
-                r["title"][:30],
-                r["company"][:20],
+                escape_markup(r["platform"]),
+                escape_markup(r["title"][:30]),
+                escape_markup(r["company"][:20]),
                 score_str,
-                f"[{status_color}]{r['status']}[/{status_color}]",
+                f"[{status_color}]{escape_markup(r['status'])}[/{status_color}]",
             )
         console.print(rec_table)
 
     if export or html:
         out_target = export or Path("report.html")
-        created = export_report(
-            db_path=db,
-            output_path=out_target,
-            min_score=min_score,
-            status_filter=status_filter,
-            limit=top,
-            open_browser=html,
-        )
+        try:
+            created = export_report(
+                db_path=db,
+                output_path=out_target,
+                min_score=min_score,
+                status_filter=status_filter,
+                limit=top,
+                open_browser=html,
+                sort_by=sort,
+            )
+        except (OSError, ValueError) as exc:
+            console.print(f"[bold red]Report export failed:[/bold red] {exc}")
+            raise typer.Exit(1)
         console.print(f"\n[bold green]✔ Report successfully exported to:[/bold green] {created}")
 
 
@@ -197,7 +265,7 @@ def run(
         help="Comma-separated sites: jobinja,jobvision,irantalent,remotive,themuse,linkedin,indeed",
     ),
     auto: bool = typer.Option(False, "--auto", help="Fully automated mode without interactive confirmation per job"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate form filling without clicking final submit button"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview job pages without changing forms or submitting"),
     min_score: Optional[int] = typer.Option(None, "--min-score", help="Override minimum fit score threshold (0-100)"),
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max jobs to apply in this run"),
     cdp_url: Optional[str] = typer.Option(None, "--cdp-url", help="Chrome DevTools Protocol URL"),
@@ -210,7 +278,15 @@ def run(
     """Discover jobs, score compatibility against resume, and apply."""
 
     async def _run():
-        cfg = load_config(config)
+        try:
+            cfg = load_config(config)
+        except (ValueError, OSError) as exc:
+            console.print(f"[bold red]Configuration error:[/bold red] {exc}")
+            raise typer.Exit(1)
+        config_errors = _validate_run_config(cfg, sites, min_score, limit)
+        if config_errors:
+            console.print("[bold red]Invalid run configuration:[/bold red]\n- " + "\n- ".join(config_errors))
+            raise typer.Exit(1)
 
         # Resolve upload mode from CLI flag or config.yaml
         resolved_upload_mode = (
@@ -225,7 +301,10 @@ def run(
 
         # Resume path resolution
         has_explicit_resume = resume is not None
-        pdf_path = resume if resume is not None else (Path(cfg.get("resume_path")) if cfg.get("resume_path") else None)
+        configured_resume = cfg.get("resume_path")
+        if configured_resume and config is not None and not Path(configured_resume).is_absolute():
+            configured_resume = config.parent / configured_resume
+        pdf_path = resume if resume is not None else (Path(configured_resume) if configured_resume else None)
 
         candidate = None
         if pdf_path and pdf_path.exists():
@@ -236,12 +315,18 @@ def run(
                 except Exception as e:
                     console.print(f"[bold red]Failed to parse resume:[/bold red] {e}")
                     raise typer.Exit(1)
+        elif has_explicit_resume:
+            console.print(f"[bold red]Resume file not found at:[/bold red] {pdf_path}")
+            raise typer.Exit(1)
+        elif pdf_path is not None:
+            console.print(f"[bold red]Configured resume file not found at:[/bold red] {pdf_path}")
+            raise typer.Exit(1)
         else:
-            if has_explicit_resume:
-                console.print(f"[bold red]Resume file not found at:[/bold red] {pdf_path}")
-                raise typer.Exit(1)
             # Build from config profile (no local PDF required for site-hosted resumes)
             candidate = build_profile_from_config(cfg)
+            if not dry_run and not (candidate.full_name and candidate.top_skills):
+                console.print("[bold red]Live applications require candidate facts in candidate_profile or a readable resume PDF.[/bold red]")
+                raise typer.Exit(1)
             console.print(Panel(
                 f"[bold cyan]Using site-hosted resume + config profile (no PDF required)[/bold cyan]\n"
                 f"Candidate: [bold]{candidate.full_name}[/bold] ({candidate.years_of_experience} yrs exp)\n"
@@ -280,7 +365,12 @@ def run(
         ))
 
         llm = get_llm_provider(cfg)
-        store = JobStore(Path(cfg.get("db_path", "data/jobs.db")))
+        configured_db = cfg.get("db_path", "data/jobs.db")
+        if config is not None and not Path(configured_db).is_absolute():
+            resolved_db = config.parent / configured_db
+        else:
+            resolved_db = Path(configured_db)
+        store = JobStore(resolved_db)
         applier = BrowserApplier(cdp_url=chrome_cdp, timeout_seconds=chrome_timeout)
 
         # 2. Discover Jobs
@@ -330,10 +420,11 @@ def run(
                             llm=llm,
                             min_score=threshold,
                             candidate_extra=candidate_extra,
+                            location_preferences=locations,
                         )
                 except Exception as eval_err:
                     logger.error("Failed to evaluate job %s: %s", job.id, eval_err)
-                    console.print(f"[bold red]Error evaluating job {job.title}:[/bold red] {eval_err}")
+                    console.print(f"[bold red]Error evaluating job {escape_markup(job.title)}:[/bold red] {escape_markup(str(eval_err))}")
                     store.record_match_result(
                         job_id=job.id,
                         fit_score=0,
@@ -350,21 +441,21 @@ def run(
                 # Display Evaluation Card
                 score_color = "green" if evaluation.fit_score >= 80 else ("yellow" if evaluation.fit_score >= threshold else "red")
                 console.print(Panel(
-                    f"[bold]Company:[/bold] {job.company} | [bold]Platform:[/bold] {job.platform}\n"
-                    f"[bold]URL:[/bold] {job.url}\n"
+                    f"[bold]Company:[/bold] {escape_markup(job.company)} | [bold]Platform:[/bold] {escape_markup(job.platform)}\n"
+                    f"[bold]URL:[/bold] {escape_markup(job.url)}\n"
                     f"[bold]Fit Score:[/bold] [{score_color}]{evaluation.fit_score}%[/{score_color}] "
                     f"({'Match' if evaluation.is_good_match else 'Below Threshold'}) | "
                     f"[bold]Seniority:[/bold] {evaluation.seniority_fit or 'N/A'} | "
                     f"[bold]Comp:[/bold] {evaluation.compensation_fit or 'N/A'}\n"
-                    f"[bold]Reasons:[/bold] {evaluation.reasons}\n"
-                    f"[bold]Missing Skills:[/bold] {', '.join(evaluation.missing_skills) if evaluation.missing_skills else 'None'}\n"
-                    f"[bold]Cover Note:[/bold]\n{evaluation.cover_letter}",
-                    title=f"Job Analysis: {job.title}",
+                    f"[bold]Reasons:[/bold] {escape_markup(evaluation.reasons)}\n"
+                    f"[bold]Missing Skills:[/bold] {escape_markup(', '.join(evaluation.missing_skills) if evaluation.missing_skills else 'None')}\n"
+                    f"[bold]Cover Note:[/bold]\n{escape_markup(evaluation.cover_letter)}",
+                    title=f"Job Analysis: {escape_markup(job.title)}",
                     border_style=score_color,
                 ))
 
                 if not evaluation.is_good_match or (not auto and not Confirm.ask(
-                    f"Send application to [bold cyan]{job.company}[/bold cyan] ({evaluation.fit_score}%)?",
+                    f"Send application to [bold cyan]{escape_markup(job.company)}[/bold cyan] ({evaluation.fit_score}%)?",
                     default=True,
                 )):
                     skipped_count += 1
@@ -376,6 +467,10 @@ def run(
                         cover_letter=evaluation.cover_letter,
                         status="skipped",
                     )
+                    continue
+
+                if not dry_run and not store.claim_application(job.id):
+                    console.print(f"[yellow]Application already claimed or protected for {job.id}; skipping.[/yellow]")
                     continue
 
                 # Execute browser application
@@ -391,7 +486,17 @@ def run(
                         upload_mode=resolved_upload_mode,
                     )
 
-                final_status = app_res["status"] if app_res.get("success") else "failed"
+                final_status = app_res.get("status", "failed")
+                if final_status == "failed" and (
+                    str(app_res.get("notes", "")).startswith("[pre_submit]")
+                    or str(app_res.get("error", "")).startswith("[pre_submit]")
+                ):
+                    app_res["notes"] = app_res.get("error") or app_res.get("notes")
+                elif final_status == "failed" and app_res.get("pre_submit") is True:
+                    app_res["notes"] = "[pre_submit] " + (app_res.get("error") or "Application stopped before submission.")
+                elif final_status == "failed":
+                    # Unknown failure provenance must remain protected from automatic retries.
+                    final_status = "submission_unknown"
                 store.record_match_result(
                     job_id=job.id,
                     fit_score=evaluation.fit_score,
@@ -403,16 +508,16 @@ def run(
                 store.record_application(
                     job.id,
                     status=final_status,
-                    notes=app_res.get("notes") if app_res.get("success") else app_res.get("error"),
+                    notes=app_res.get("notes") or app_res.get("error"),
                 )
 
                 if app_res.get("success"):
                     if final_status in ("applied", "dry_run"):
                         applied_count += 1
-                    console.print(f"[bold green]✔ {final_status}:[/bold green] {app_res.get('notes', 'Done')}")
+                    console.print(f"[bold green]✔ {escape_markup(str(final_status))}:[/bold green] {escape_markup(str(app_res.get('notes', 'Done')))}")
                 else:
                     failed_count += 1
-                    console.print(f"[bold red]✘ Failed:[/bold red] {app_res.get('error')}")
+                    console.print(f"[bold red]✘ Failed:[/bold red] {escape_markup(str(app_res.get('error')))}")
 
                 # Polite delay between browser actions
                 await asyncio.sleep(3)

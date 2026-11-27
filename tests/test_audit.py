@@ -6,6 +6,19 @@ import pymupdf
 import pytest
 from fitapply.llm import BaseLLM
 from fitapply.resume import ResumeAuditResult, audit_resume
+from pydantic import ValidationError
+
+
+@pytest.mark.parametrize("score", [0, 100])
+def test_ats_score_bounds_accept_endpoints(score):
+    result = ResumeAuditResult(ats_score=score, summary_verdict="ok")
+    assert result.ats_score == score
+
+
+@pytest.mark.parametrize("score", [-1, 101])
+def test_ats_score_bounds_reject_out_of_range(score):
+    with pytest.raises(ValidationError):
+        ResumeAuditResult(ats_score=score, summary_verdict="ok")
 
 
 class MockAuditLLM(BaseLLM):

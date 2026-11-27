@@ -1,4 +1,4 @@
-# FitApply 🎯 (v0.3.0)
+# FitApply 🎯 (v0.3.1)
 
 **ربات هوشمند ارزیابی رزومه، جستجو و ارسال خودکار به آگهی‌های شغلی**
 
@@ -14,10 +14,10 @@
 ```bash
 git clone https://github.com/abolfazl-moeini/FitApply.git
 cd FitApply
-uv sync
+uv sync --extra antigravity
 cp config.example.yaml config.yaml
 ```
-*(در `config.yaml` کلمات کلیدی، پلتفرم‌ها و ارائه‌دهنده هوش مصنوعی — `antigravity` یا `litellm` — را مشخص کنید.)*
+*(برای استفاده از ارائه‌دهنده پیش‌فرض Antigravity، SDK آن با دستور بالا نصب می‌شود. برای `litellm` در `config.yaml` مقدار `provider: "litellm"` و مدل را تنظیم کنید و کلید API ارائه‌دهنده را در متغیر محیطی مناسب آن قرار دهید. وابستگی‌های تست با `uv sync --extra dev` نصب می‌شوند.)*
 
 **۲. نقد و اعتبارسنجی رزومه قبل از ارسال (جدید در v0.2.0):**
 ```bash
@@ -35,7 +35,7 @@ uv run fitapply audit --resume cv.pdf
 
 **۴. اجرا:**
 ```bash
-# اجرای تستی (فرم‌ها پر می‌شوند ولی ارسال نهایی کلیک نمی‌شود)
+# پیش‌نمایش (صفحه آگهی بررسی می‌شود؛ فرم‌ها تغییر نمی‌کنند و چیزی ارسال نمی‌شود)
 uv run fitapply run --resume cv.pdf --dry-run
 
 # اجرای تعاملی (تایید شما پیش از هر ارسال)

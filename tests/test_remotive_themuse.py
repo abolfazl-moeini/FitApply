@@ -98,7 +98,7 @@ async def test_remotive_dedup_and_themuse_null_fields(monkeypatch):
         "results": [
             {
                 "id": 3003,
-                "name": "Null-Safe Role",
+                "name": "Backend Null-Safe Role",
                 "company": None,
                 "refs": None,
                 "locations": None,
@@ -122,4 +122,4 @@ async def test_remotive_dedup_and_themuse_null_fields(monkeypatch):
     m_jobs = await muse.search_jobs(keywords=["Backend"], limit=5)
     assert len(m_jobs) == 1
     assert m_jobs[0].company == "Employer"
-    assert m_jobs[0].location == "Remote / Flexible"
+    assert m_jobs[0].location == "Location not specified"

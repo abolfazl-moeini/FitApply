@@ -51,6 +51,9 @@ class JobStore:
                 );
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(job_applications)")}
+            if "application_claimed_at" not in columns:
+                conn.execute("ALTER TABLE job_applications ADD COLUMN application_claimed_at TIMESTAMP DEFAULT NULL")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_platform ON job_applications(platform);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON job_applications(status);")
 
@@ -65,7 +68,9 @@ class JobStore:
         with self._get_connection() as conn:
             cur = conn.execute("SELECT status FROM job_applications WHERE id = ?", (job_id,))
             row = cur.fetchone()
-            return row is not None and row["status"] != "discovered"
+            return row is not None and row["status"] not in {"discovered", "dry_run"} and not (
+                row["status"] == "failed" and (row["notes"] or "").startswith("[pre_submit]")
+            )
 
     def record_discovery(self, job: JobPosting, status: str = "discovered") -> None:
         """Save newly discovered job posting."""
@@ -110,7 +115,7 @@ class JobStore:
                     missing_skills = ?,
                     cover_letter = ?,
                     status = ?
-                WHERE id = ?;
+                WHERE id = ? AND status NOT IN ('applied', 'already_applied', 'submission_unknown', 'application_claimed');
                 """,
                 (
                     fit_score,
@@ -122,18 +127,44 @@ class JobStore:
                 ),
             )
 
-    def record_application(self, job_id: str, status: str = "applied", notes: Optional[str] = None) -> None:
-        """Mark job as applied (or dry_run / failed)."""
+    def claim_application(self, job_id: str, *, retry_skipped: bool = False) -> bool:
+        """Atomically reserve a live application attempt; unresolved claims remain protected."""
         with self._get_connection() as conn:
-            conn.execute(
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT status, notes FROM job_applications WHERE id = ?", (job_id,)).fetchone()
+            if row is None:
+                return False
+            status, notes = row["status"], row["notes"] or ""
+            retryable = status in {"discovered", "dry_run"} or (status == "skipped" and retry_skipped)
+            # Only failures written by the new code with a clear pre-submit marker are safely retryable.
+            retryable = retryable or (status == "failed" and notes.startswith("[pre_submit]"))
+            if not retryable:
+                return False
+            cur = conn.execute(
                 """
                 UPDATE job_applications
-                SET status = ?,
-                    applied_at = ?,
-                    notes = ?
-                WHERE id = ?;
+                SET status = 'application_claimed', application_claimed_at = ?, notes = NULL
+                WHERE id = ? AND status = ?;
                 """,
-                (status, datetime.now().isoformat(), notes, job_id),
+                (datetime.now().isoformat(), job_id, status),
+            )
+            return cur.rowcount == 1
+
+    def record_application(self, job_id: str, status: str = "applied", notes: Optional[str] = None) -> None:
+        """Persist an application outcome; only confirmed outcomes receive applied_at."""
+        terminal = {"applied", "already_applied", "submission_unknown"}
+        if status not in terminal and status not in {"dry_run", "failed", "skipped", "application_claimed"}:
+            raise ValueError(f"Unsupported application status: {status}")
+        if status == "failed" and notes and not notes.startswith("[pre_submit]"):
+            # Unclassified failures may have happened after dispatch; protect them as ambiguous.
+            status = "submission_unknown"
+        when = datetime.now().isoformat() if status in terminal - {"submission_unknown"} else None
+        with self._get_connection() as conn:
+            conn.execute(
+                """UPDATE job_applications
+                   SET status = ?, applied_at = ?, application_claimed_at = NULL, notes = ?
+                   WHERE id = ? AND status NOT IN ('applied', 'already_applied', 'submission_unknown')""",
+                (status, when, notes, job_id),
             )
 
     def get_stats(self) -> Dict[str, Any]:

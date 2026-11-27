@@ -5,12 +5,42 @@ from __future__ import annotations
 import html
 import json
 import re
+import os
+import tempfile
+from urllib.parse import urlsplit
 import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fitapply.store import JobStore
+
+
+def _safe_url(value: Any) -> Optional[str]:
+    url = str(value or "")
+    if any(ord(ch) < 32 or ch.isspace() for ch in url) or any(ch in url for ch in "<>\\\\`\""):
+        return None
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            return None
+        _ = parsed.port  # Raises for malformed ports.
+        if parsed.username is not None or parsed.password is not None:
+            return None
+        return url
+    except ValueError:
+        return None
+
+
+def _md_inline(value: Any) -> str:
+    return re.sub(r"([\\`*_{}\[\]<>()#+.!|~-])", r"\\\1", str(value or "").replace("\r", " ").replace("\n", " "))
+
+
+def _md_block(value: Any) -> str:
+    value = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    value = html.escape(value, quote=False)
+    fence = "`" * max(3, max((len(m.group()) for m in re.finditer(r"`+", value)), default=0) + 1)
+    return f"{fence}text\n{value}\n{fence}"
 
 
 def generate_markdown_report(stats: Dict[str, Any], jobs: List[Dict[str, Any]]) -> str:
@@ -29,7 +59,7 @@ def generate_markdown_report(stats: Dict[str, Any], jobs: List[Dict[str, Any]]) 
     if by_status:
         lines.append("- **Status Breakdown:**")
         for st, count in by_status.items():
-            lines.append(f"  - `{st}`: {count}")
+            lines.append(f"  - `{_md_inline(st)}`: {count}")
     lines.append("")
 
     lines.append("## 2. Jobs Overview")
@@ -42,13 +72,11 @@ def generate_markdown_report(stats: Dict[str, Any], jobs: List[Dict[str, Any]]) 
 
     for j in jobs:
         score_val = f"{j['fit_score']}%" if j.get("fit_score") is not None else "-"
-        status_val = f"`{j.get('status') or 'discovered'}`"
-        title = (j.get("title") or "").replace("|", "-").replace("\n", " ").replace("\r", " ")
-        company = (j.get("company") or "").replace("|", "-").replace("\n", " ").replace("\r", " ")
-        platform = (j.get("platform") or "").replace("|", "-").replace("\n", " ").replace("\r", " ")
-        location = (j.get("location") or "N/A").replace("|", "-").replace("\n", " ").replace("\r", " ")
-        url = j.get("url") or "#"
-        lines.append(f"| {score_val} | {status_val} | {title} | {company} | {platform} | {location} | [Open Link]({url}) |")
+        title, company = _md_inline(j.get("title")), _md_inline(j.get("company"))
+        platform, location = _md_inline(j.get("platform")), _md_inline(j.get("location") or "N/A")
+        url = _safe_url(j.get("url"))
+        link = f"[Open Link](<{url}>)" if url else "Open Link"
+        lines.append(f"| {score_val} | {_md_inline(j.get('status') or 'discovered')} | {title} | {company} | {platform} | {location} | {link} |")
 
     lines.append("")
     lines.append("## 3. High-Fit Opportunities Detail")
@@ -57,20 +85,21 @@ def generate_markdown_report(stats: Dict[str, Any], jobs: List[Dict[str, Any]]) 
         lines.append("*No jobs with fit score >= 75% found in this batch.*")
     else:
         for idx, j in enumerate(high_fit, 1):
-            lines.append(f"### {idx}. {j['title']} @ {j['company']}")
-            lines.append(f"- **Platform:** {j['platform']} | **Status:** `{j['status']}` | **Score:** {j['fit_score']}%")
-            lines.append(f"- **URL:** {j['url']}")
+            lines.append(f"### {idx}. {_md_inline(j.get('title'))} @ {_md_inline(j.get('company'))}")
+            lines.append(f"- **Platform:** {_md_inline(j.get('platform'))} | **Status:** {_md_inline(j.get('status') or 'discovered')} | **Score:** {j.get('fit_score')}%")
+            safe_url = _safe_url(j.get("url"))
+            lines.append(f"- **URL:** <{safe_url}>" if safe_url else "- **URL:** Unavailable")
             if j.get("fit_reasons"):
-                lines.append(f"- **Fit Reasons:** {j['fit_reasons']}")
+                lines.append(f"- **Fit Reasons:** {_md_inline(j['fit_reasons'])}")
             if j.get("missing_skills"):
                 try:
                     missing = json.loads(j["missing_skills"])
                     if missing:
-                        lines.append(f"- **Missing Skills:** {', '.join(missing)}")
+                        lines.append(f"- **Missing Skills:** {', '.join(_md_inline(skill) for skill in missing)}")
                 except Exception:
                     pass
             if j.get("cover_letter"):
-                lines.append(f"- **Tailored Cover Note:**\n```text\n{j['cover_letter']}\n```")
+                lines.append(f"- **Tailored Cover Note:**\n{_md_block(j['cover_letter'])}")
             lines.append("")
 
     return "\n".join(lines)
@@ -130,7 +159,7 @@ def generate_html_report(stats: Dict[str, Any], jobs: List[Dict[str, Any]]) -> s
                 {cover_section}
             </div>
             <div class="card-footer">
-                <a href="{html.escape(j.get('url') if str(j.get('url') or '').startswith(('http://', 'https://')) else '#')}" target="_blank" rel="noopener noreferrer" class="btn-link">View Job Posting &rarr;</a>
+            <a href="{html.escape(_safe_url(j.get('url')) or '#', quote=True)}" target="_blank" rel="noopener noreferrer" class="btn-link">View Job Posting &rarr;</a>
                 <span class="date">{html.escape(j.get('created_at', ''))[:10]}</span>
             </div>
         </div>
@@ -312,7 +341,7 @@ def generate_html_report(stats: Dict[str, Any], jobs: List[Dict[str, Any]]) -> s
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-val">{stats.get('total', 0)}</div>
-                <div class="stat-label">Total Jobs Evaluated</div>
+                <div class="stat-label">Total Jobs Tracked</div>
             </div>
             <div class="stat-card">
                 <div class="stat-val" style="color: var(--success);">{stats.get('applied_today', 0)}</div>
@@ -344,6 +373,7 @@ def export_report(
     status_filter: Optional[str] = None,
     limit: int = 50,
     open_browser: bool = False,
+    sort_by: str = "fit_score",
 ) -> Path:
     """Query JobStore and export to either Markdown or HTML report."""
     store = JobStore(db_path)
@@ -352,18 +382,34 @@ def export_report(
         limit=limit,
         min_score=min_score,
         status_filter=status_filter,
-        sort_by="fit_score",
+        sort_by=sort_by,
     )
 
     out_file = Path(output_path) if output_path else Path("report.html" if open_browser else "report.md")
     out_file.parent.mkdir(parents=True, exist_ok=True)
+
+    if open_browser and out_file.suffix.lower() != ".html":
+        raise ValueError("Cannot open browser for a non-HTML export file (target must end in .html)")
 
     if out_file.suffix.lower() == ".html":
         content = generate_html_report(stats, jobs)
     else:
         content = generate_markdown_report(stats, jobs)
 
-    out_file.write_text(content, encoding="utf-8")
+    db_file = Path(db_path)
+    db_resolved = db_file.resolve()
+    out_resolved = out_file.resolve()
+    protected = {db_resolved, Path(str(db_file) + "-wal").resolve(), Path(str(db_file) + "-shm").resolve()}
+    if out_resolved in protected or (out_file.exists() and os.path.samefile(out_file, db_file)):
+        raise ValueError("Report output cannot overwrite the SQLite database or its sidecars")
+    fd, temp_name = tempfile.mkstemp(prefix=f".{out_file.name}.", dir=out_file.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(content)
+        os.replace(temp_name, out_file)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
 
     if open_browser and out_file.suffix.lower() == ".html":
         webbrowser.open(f"file://{out_file.resolve()}")

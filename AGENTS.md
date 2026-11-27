@@ -10,28 +10,29 @@ AI-powered job application automation agent for Iranian (`jobinja`, `jobvision`,
 
 ## Project Layout
 
-- `src/fitapply/cli.py` — Typer CLI (`parse`, `audit`, `status`, `run`) with `--upload-mode`, `--dry-run`, `--auto`, `--html`, and `--export`.
-- `src/fitapply/resume.py` — PDF extraction (`pymupdf`, 15k char bound), `mtime`-aware `.pdf.profile.json` caching, `build_profile_from_config()`, and `audit_resume()`.
+- `src/fitapply/cli.py` — Typer CLI (`parse`, `audit`, `status`, `run`) with `--config`, `--upload-mode`, `--dry-run`, `--auto`, `--html`, and `--export`.
+- `src/fitapply/resume.py` — PDF extraction (`pymupdf`, prompt-budget bounded), SHA-256 fingerprint-aware `.pdf.profile.json` caching, `build_profile_from_config()`, and bounded `audit_resume()`.
 - `src/fitapply/discovery/` — `BaseDiscoverer` / `JobPosting` (`base.py`), platform registry (`__init__.py`), Iranian scrapers (`iran_boards.py`), and global/remote boards (`global_boards.py`: `GlobalBoardsDiscoverer`, `RemotiveDiscoverer`, `TheMuseDiscoverer`).
-- `src/fitapply/matcher.py` — `evaluate_job_fit()` producing `JobMatchEvaluation` (`fit_score` clamped `0..100`, `seniority_fit`, `compensation_fit`, `cover_letter`).
-- `src/fitapply/applier.py` — `BrowserApplier` with lazy persistent CDP lifecycle (`async with`), `site_profile` / `auto` / `always_upload` handling, 1-click apply detection, and LLM screening Q&A.
-- `src/fitapply/llm.py` — `BaseLLM` (with 1-retry JSON recovery), `AntigravityLLM`, and `LiteLLM`.
-- `src/fitapply/store.py` — SQLite `JobStore` (`data/jobs.db`) with `is_job_seen()` and `is_job_evaluated()`.
-- `src/fitapply/report.py` — Markdown and standalone HTML dashboard export (`html.escape` + `http(s)://` URL validation).
-- `tests/` — Unit and integration test suite (`pytest` + `pytest-asyncio`).
+- `src/fitapply/matcher.py` — `evaluate_job_fit()` producing `JobMatchEvaluation` (`fit_score` clamped `0..100`, `seniority_fit`, `compensation_fit`, `cover_letter`) with candidate privacy filtering and salary unit awareness.
+- `src/fitapply/applier.py` — `BrowserApplier` with lazy persistent CDP lifecycle (`async with`), read-only `--dry-run`, `site_profile` / `auto` / `always_upload` handling, scoped modal/receipt verification, and LLM screening Q&A.
+- `src/fitapply/llm.py` — `BaseLLM` (with 1-retry JSON recovery strictly for decode/schema failures), `AntigravityLLM`, and `LiteLLM`.
+- `src/fitapply/store.py` — SQLite `JobStore` (`data/jobs.db`) with atomic `claim_application()`, safe retryable pre-submit failures, and protected submissions.
+- `src/fitapply/report.py` — Markdown and standalone HTML dashboard export with DB overwrite protection, context-aware escaping, and `http(s)://` URL validation.
+- `tests/` — Unit and integration test suite (`pytest` + `pytest-asyncio`, 66 tests).
 
 ## Commands
 
 ```bash
 # Sync environment
-uv sync
+uv sync --extra antigravity
 
-# Run full test suite (all 39+ tests must pass before committing)
+# Run full test suite (all 66 tests must pass before committing)
 uv run pytest -v
 
 # Check CLI entrypoints
 uv run fitapply --help
 uv run fitapply run --help
+uv run fitapply status --help
 ```
 
 ## Conventions & Guardrails

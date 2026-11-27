@@ -48,21 +48,23 @@ class BaseLLM(ABC):
             (system + "\n\n" if system else "")
             + f"You MUST respond ONLY with a valid JSON object matching this schema:\n{schema_json}\nDo not include any explanation or extra text outside the JSON."
         )
-        try:
-            raw = await self.complete(prompt=prompt, system=full_system)
-            cleaned = clean_json_text(raw)
-            data = json.loads(cleaned)
+        def parse(raw: str) -> T:
+            data = json.loads(clean_json_text(raw))
             return response_model.model_validate(data)
-        except Exception as e:
-            logger.warning("First structured JSON parse failed (%s). Retrying once with strict instructions...", e)
-            retry_prompt = (
-                f"{prompt}\n\nIMPORTANT: Your previous output could not be parsed ({e}). "
-                "Respond ONLY with a valid, clean JSON object matching the required schema."
-            )
-            raw_retry = await self.complete(prompt=retry_prompt, system=full_system)
-            cleaned_retry = clean_json_text(raw_retry)
-            data_retry = json.loads(cleaned_retry)
-            return response_model.model_validate(data_retry)
+
+        # Provider failures are not malformed model output; never retry them here.
+        raw = await self.complete(prompt=prompt, system=full_system)
+        try:
+            return parse(raw)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            logger.warning("Structured response was invalid; retrying once with strict JSON instructions")
+
+        retry_prompt = (
+            f"{prompt}\n\nYour previous output was not valid JSON matching the required schema. "
+            "Respond ONLY with a valid, clean JSON object matching the required schema."
+        )
+        raw_retry = await self.complete(prompt=retry_prompt, system=full_system)
+        return parse(raw_retry)
 
 
 class AntigravityLLM(BaseLLM):
@@ -76,7 +78,7 @@ class AntigravityLLM(BaseLLM):
             from google.antigravity import Agent, LocalAgentConfig
         except ImportError as e:
             raise ImportError(
-                "google-antigravity is not installed. Install with `uv pip install google-antigravity`"
+                "google-antigravity is not installed. Install FitApply's supported provider extra with `uv sync --extra antigravity`."
             ) from e
 
         sys_inst = system or self.default_system

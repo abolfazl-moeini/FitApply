@@ -13,24 +13,14 @@ resume_upload_mode: "auto"
 
 # Candidate profile used for AI job-matching (especially when no PDF resume is provided)
 candidate_profile:
-  full_name: "Ali Moeini"
-  headline: "Senior Backend Developer"
-  years_of_experience: 6.0
-  top_skills:
-    - "Python"
-    - "FastAPI"
-    - "PostgreSQL"
-    - "Docker"
-    - "Playwright"
-  secondary_skills:
-    - "Redis"
-    - "Kubernetes"
-    - "CI/CD"
-  summary: "Senior backend developer experienced in designing scalable microservices, async scraping, and workflow automation."
-  location: "Tehran / Remote"
-  languages:
-    - "Persian (Native)"
-    - "English (Professional)"
+  full_name: ""
+  headline: ""
+  years_of_experience: 0
+  top_skills: []
+  secondary_skills: []
+  summary: ""
+  location: ""
+  languages: []
 
 # LLM Provider settings
 # Options for provider: "antigravity" (native Antigravity SDK) or "litellm"
@@ -58,7 +48,7 @@ search:
 # Matching criteria
 matching:
   min_fit_score: 75        # Only consider jobs with >= 75% compatibility
-  max_applications_per_run: 10  # Daily rate-limiting guardrail
+  max_applications_per_run: 10  # Per-run application cap
 
 # Chrome CDP connection
 chrome:
@@ -67,14 +57,14 @@ chrome:
 
 # Candidate supplementary details (used to answer screening questions)
 candidate_answers:
-  full_name: "Ali Moeini"
-  email: "example@gmail.com"
-  phone: "09123456789"
-  city: "Tehran"
-  military_service: "معافیت دائم / پایان خدمت"
-  salary_expectation_irr_monthly: 60000000  # e.g. 60 Million Tomans / 600M Rials
-  years_of_experience: 6
-  degree: "کارشناسی"
-  english_level: "حرفه‌ای / پیشرفته"
-  github_url: "https://github.com/..."
-  linkedin_url: "https://linkedin.com/in/..."
+  full_name: ""
+  email: ""
+  phone: ""
+  city: ""
+  military_service: ""
+  salary_expectation_irr_monthly: 600000000  # Monthly amount in Iranian rials (60 million tomans)
+  years_of_experience: 0
+  degree: ""
+  english_level: ""
+  github_url: ""
+  linkedin_url: ""

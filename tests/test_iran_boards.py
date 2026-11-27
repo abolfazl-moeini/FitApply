@@ -44,7 +44,11 @@ async def test_jobvision_null_company_and_deduplication(monkeypatch):
         req = httpx.Request("POST", url)
         return httpx.Response(200, json=sample_api_response, request=req)
 
+    async def unexpected_get(self, url, **kwargs):
+        raise AssertionError(f"Unexpected fallback GET: {url}")
+
     monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+    monkeypatch.setattr(httpx.AsyncClient, "get", unexpected_get)
 
     jobs = await discoverer.search_jobs(keywords=["Python"], limit=5)
     assert len(jobs) == 1

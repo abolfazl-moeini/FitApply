@@ -12,5 +12,9 @@ data/
 *.db
 .browser-profile/
 .env
+config.yaml
+resume.pdf
+report.md
+report.html
 *.pdf.profile.json
 .DS_Store

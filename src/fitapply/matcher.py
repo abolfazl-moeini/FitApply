@@ -28,7 +28,7 @@ class JobMatchEvaluation(BaseModel):
         description="'well_matched', 'overqualified', or 'underqualified'",
     )
     compensation_fit: Optional[str] = Field(
-        default="acceptable",
+        default="unspecified",
         description="'meets_target', 'negotiable', 'below_target', or 'unspecified'",
     )
 
@@ -39,13 +39,17 @@ async def evaluate_job_fit(
     llm: BaseLLM,
     min_score: int = 75,
     candidate_extra: Dict[str, Any] | None = None,
+    location_preferences: Optional[List[str]] = None,
 ) -> JobMatchEvaluation:
     """Evaluate candidate profile against a job posting and generate customized cover letter."""
-    extra_info_str = ""
-    if candidate_extra:
-        extra_info_str = "\nADDITIONAL CANDIDATE DETAILS:\n" + "\n".join(
-            f"- {k}: {v}" for k, v in candidate_extra.items() if v
-        )
+    # Only pass facts needed for professional matching. Contact details, military
+    # service, arbitrary screening answers, and other private config keys stay local.
+    salary_expectation = (candidate_extra or {}).get("salary_expectation_irr_monthly")
+    candidate_salary = (
+        f"{salary_expectation} Iranian rials per month (as configured)"
+        if salary_expectation not in (None, "") else "Unspecified"
+    )
+    preferred_locations = ", ".join(location_preferences or []) or "Unspecified"
 
     prompt = f"""You are an elite career advisor and technical recruiter.
 Compare the following Candidate Profile with the Job Posting.
@@ -65,15 +69,15 @@ If the job posting is in Persian, write the cover letter in natural, polite Pers
 If the job posting is in English, write the cover letter in fluent English.
 
 ---
-CANDIDATE PROFILE:
-Name: {candidate.full_name}
+CANDIDATE PROFESSIONAL PROFILE:
 Summary: {candidate.summary}
 Years of Experience: {candidate.years_of_experience}
 Top Skills: {', '.join(candidate.top_skills)}
 Secondary Skills: {', '.join(candidate.secondary_skills)}
 Experiences:
 {chr(10).join(f"- {exp.title} at {exp.company}: {', '.join(exp.highlights)}" for exp in candidate.experiences[:4])}
-{extra_info_str}
+Candidate salary expectation: {candidate_salary}
+Preferred locations: {preferred_locations}
 
 ---
 JOB POSTING:
@@ -81,6 +85,7 @@ Platform: {job.platform}
 Title: {job.title}
 Company: {job.company}
 Location: {job.location or 'Not specified'}
+Offered salary (preserve source units/period; do not infer missing units): {job.salary or 'Unspecified'}
 Job Description:
 {job.description[:3000]}
 ---
